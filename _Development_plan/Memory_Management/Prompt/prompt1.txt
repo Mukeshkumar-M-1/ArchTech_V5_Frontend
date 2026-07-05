@@ -1,0 +1,20 @@
+In the current working struture 
+1. when the user upload the file in RequirementListing.jsx based on that requirements.json is created.
+2. With the help of requirements.json memory are created
+3. For Viewing the Memory the MemoryManagement.jsx is created 
+4. For the MemoryManagement.jsx i need an UI development Plan for those features like
+ 4.1 Top section with the buttons of tab section view for uploaded file name for based on the file memories are viewed.
+4.2 Middle section with two panel
+   one button is present for generate memory and one process showing label for memory generation progess showing.
+    4.2.1 Panel 1 - Left side panel for list all the files for generated memory files to show as an file structure.
+   4.2.2 Panel 2 - Markdown Editor with Preview section
+
+Features in the 4.2.1 :
+  - Expand and collapsible folder 
+  - File searching features 
+  - add icons to folder is in expanded view and closed view 
+  - add icons to files 
+Features in 4.2.2 :
+  - markdown rendering with metadata cards, edit mode, and full-screen view
+  
+updated the plan as per this UI requirements

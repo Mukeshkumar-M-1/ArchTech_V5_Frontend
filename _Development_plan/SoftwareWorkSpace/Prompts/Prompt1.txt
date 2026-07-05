@@ -1,0 +1,6 @@
+i needed add those features add in UI
+1. Add separate Tab section on the top of the section to show the SRS Document, SDD Generation etc to add in future tabs 
+2. Based on this main content should be changed as per the tab choosen.
+3. Main content i need there tab section like 
+  3.1 Document Template
+  3.2 Document generation 

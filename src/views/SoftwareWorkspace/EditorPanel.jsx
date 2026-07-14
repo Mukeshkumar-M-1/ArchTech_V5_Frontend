@@ -21,8 +21,8 @@ import GenerationPanel from './GenerationPanel';
  */
 export default function EditorPanel({
   activeMainTab, subTab, onSubTabChange,
-  isFullscreen, onFullscreenToggle, onGenerate, isGenActive, srsDoc, project,
-  selectedChatBlocks, setSelectedChatBlocks
+  isFullscreen, onFullscreenToggle, onGenerate, isGenActive, srsDoc, setSrsDoc, onCancel,
+  project, selectedChatBlocks, setSelectedChatBlocks
 }) {
   const isSdd = activeMainTab === 'sdd';
 
@@ -69,9 +69,11 @@ export default function EditorPanel({
           ) : (
             <GenerationPanel
               srsDoc={srsDoc}
+              setSrsDoc={setSrsDoc}
               isGenActive={isGenActive}
               activeMainTab={activeMainTab}
               project={project}
+              onCancel={onCancel}
               selectedChatBlocks={selectedChatBlocks}
               setSelectedChatBlocks={setSelectedChatBlocks}
             />

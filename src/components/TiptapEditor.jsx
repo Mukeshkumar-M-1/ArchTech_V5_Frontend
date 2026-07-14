@@ -535,7 +535,7 @@ export default function TiptapEditor({ content, onChange, className, project, re
     // Content Updation (HTML to Markdown)
     onUpdate: ({ editor }) => {
       debouncedOnChange(editor.storage.markdown.getMarkdown());
-      console.log("Markdown Rendering : ", editor.storage.markdown.getMarkdown())
+      // console.log("Markdown Rendering : ", editor.storage.markdown.getMarkdown())
     },
     // Custom Editing Props
     editorProps: {

@@ -689,7 +689,7 @@ export default function RequirementListing({ project }) {
         </div>
 
         {/* Bottom Row - Data Extraction & View Selection */}
-        <div className="relative z-10 p-8 flex justify-between items-center bg-white/20 backdrop-blur-sm">
+        <div className="relative p-8 flex justify-between items-center bg-white/20 backdrop-blur-sm">
           <div className="flex items-center gap-3">
             <h2 className="text-3xl font-black text-slate-800 tracking-tight bg-clip-text text-transparent bg-gradient-to-br from-slate-900 to-slate-600 ml-2">
               Data Extraction

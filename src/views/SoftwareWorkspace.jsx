@@ -104,6 +104,10 @@ export default function SoftwareWorkspace({ project: activeProject }) {
     }
   };
 
+  const handleCancelGeneration = () => {
+    setIsGenerating(prev => ({ ...prev, srs: false }));
+  };
+
   const handleChatSend = async () => {
     if (!chatInput.trim() || isStreaming) return;
     const userMsg = chatInput.trim();
@@ -280,6 +284,8 @@ export default function SoftwareWorkspace({ project: activeProject }) {
               onGenerate={handleGenerateDoc}
               isGenActive={isGenActive}
               srsDoc={srsDoc}
+              setSrsDoc={setSrsDoc}
+              onCancel={handleCancelGeneration}
               project={activeProject}
               selectedChatBlocks={selectedChatBlocks}
               setSelectedChatBlocks={setSelectedChatBlocks}

@@ -18,7 +18,7 @@ export default function CustomSelect({ value, onChange, options, className = "w-
   return (
     <Listbox value={value} onChange={onChange}>
       {({ open }) => (
-        <div className={`relative ${className} ${open ? 'z-[999]' : ''}`}>
+        <div className={`relative ${className} ${open ? 'z-20' : ''}`}>
           <Listbox.Button className="relative w-full cursor-pointer bg-slate-50 border border-slate-200 text-slate-700 rounded-xl py-3 pl-4 pr-10 text-left text-xs font-bold uppercase tracking-widest focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all hover:border-blue-300">
             <span className="block truncate">{displayLabel}</span>
             <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">

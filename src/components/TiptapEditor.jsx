@@ -90,6 +90,8 @@ import { PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { CellSelection } from "@tiptap/pm/tables";
 
+import { DiffAdd, DiffDelete } from "./extensions/DiffMarks";
+
 const normalizeText = (str) => (str || "").replace(/\s+/g, " ").trim();
 
 // ─── ChatSelectionPlugin ────────────────────────────────────────────────────────
@@ -666,6 +668,7 @@ export default function TiptapEditor({
   className,
   project,
   requirementId,
+  versionNumber,
   selectedChatBlocks = [],
   setSelectedChatBlocks,
   activeSection,
@@ -677,6 +680,10 @@ export default function TiptapEditor({
     () => debounce((val) => onChange(val), 300),
     [onChange],
   );
+
+  useEffect(() => {
+    return () => debouncedOnChange.cancel();
+  }, []);
 
   const containerRef = useRef(null);
 
@@ -783,7 +790,11 @@ export default function TiptapEditor({
       // Highlight
       Highlight.configure({ multicolor: true }),
       // TODO List Item
-      TaskList,
+      TaskList.configure({
+        HTMLAttributes: {
+          class: "not-prose pl-2",
+        },
+      }),
       // List Item
       TaskItem.configure({ nested: true }),
       // UnderLine
@@ -800,6 +811,7 @@ export default function TiptapEditor({
       Focus.configure({ className: "has-focus", mode: "all" }),
       // Markdown configuration
       Markdown.configure({
+        html: true,
         transformPastedText: true,
         transformCopiedText: true,
       }),
@@ -810,16 +822,18 @@ export default function TiptapEditor({
         onHover: (info) => onHoverRef.current?.(info),
         hoveredBlockRef: hoveredBlockRef,
       }),
+      DiffAdd,
+      DiffDelete,
     ],
     // Content Updation (Markdown to HTML)
     content: marked.parse(content || ""),
     // Content Updation (HTML to Markdown)
     onUpdate: ({ editor }) => {
       debouncedOnChange(editor.storage.markdown.getMarkdown());
-      console.log(
-        "Markdown Rendering : ",
-        editor.storage.markdown.getMarkdown(),
-      );
+      // console.log(
+      //   "Markdown Rendering : ",
+      //   editor.storage.markdown.getMarkdown(),
+      // );
     },
     // Custom Editing Props
     editorProps: {
@@ -834,6 +848,121 @@ export default function TiptapEditor({
       },
     },
   });
+
+  // Listen for agent-based content edits
+  useEffect(() => {
+    const getFlexibleRegex = (text) => {
+      if (!text) return null;
+      // Escape regex chars but leave spaces and hyphens
+      let escaped = text.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Replace any sequence of whitespace or hyphens with a permissive matcher
+      let regexStr = escaped.replace(/[\s\\-]+/g, '[\\s\\-]+');
+      try {
+        return new RegExp(regexStr);
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const findBestMatch = (text, markdown) => {
+      const cleanText = text.trim();
+      if (!cleanText) return null;
+      if (markdown.includes(cleanText)) return cleanText;
+
+      const regex = getFlexibleRegex(cleanText);
+      if (regex) {
+        const match = markdown.match(regex);
+        if (match) return match[0];
+      }
+
+      // Fallback: Prefix/Suffix matching for long texts
+      if (cleanText.length > 40) {
+        const prefixStr = cleanText.substring(0, 20).trim();
+        const suffixStr = cleanText.substring(cleanText.length - 20).trim();
+
+        const prefix = prefixStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s\\-]+/g, '[\\s\\S]{1,10}');
+        const suffix = suffixStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s\\-]+/g, '[\\s\\S]{1,10}');
+        
+        try {
+          const prefixRegex = new RegExp(prefix);
+          const suffixRegex = new RegExp(suffix);
+
+          const pMatch = markdown.match(prefixRegex);
+          if (pMatch) {
+            const startIndex = pMatch.index;
+            const afterPrefix = markdown.substring(startIndex);
+            const sMatch = afterPrefix.match(suffixRegex);
+            if (sMatch) {
+              const endIndex = startIndex + sMatch.index + sMatch[0].length;
+              // Ensure the match isn't absurdly long (e.g., matching across the entire document)
+              const matchedStr = markdown.substring(startIndex, endIndex);
+              if (matchedStr.length < cleanText.length * 2) {
+                return matchedStr;
+              }
+            }
+          }
+        } catch (e) {
+          // ignore regex errors
+        }
+      }
+      return null;
+    };
+
+    const handlePreviewContentEdit = (e) => {
+      if (!editor) return;
+      const { original_text, proposed_text } = e.detail;
+      if (original_text && proposed_text) {
+        const currentMarkdown = editor.storage.markdown.getMarkdown();
+        const matchedText = findBestMatch(original_text, currentMarkdown);
+        if (matchedText) {
+          if (!currentMarkdown.includes(`<del>${matchedText}</del>`)) {
+            window.__archtech_preview_original = currentMarkdown;
+            const previewHtml = `<del>${matchedText}</del> <ins>${proposed_text}</ins>`;
+            const newMarkdown = currentMarkdown.replace(matchedText, previewHtml);
+            editor.commands.setContent(marked.parse(newMarkdown), true);
+          }
+        } else {
+          console.warn("Could not find fuzzy text in editor to preview.", original_text);
+        }
+      }
+    };
+
+    const handleAcceptContentEdit = (e) => {
+      if (!editor) return;
+      const { original_text, proposed_text } = e.detail;
+      if (original_text && proposed_text) {
+        const baseMarkdown = window.__archtech_preview_original || editor.storage.markdown.getMarkdown();
+        const matchedText = findBestMatch(original_text, baseMarkdown);
+        if (matchedText) {
+          const newMarkdown = baseMarkdown.replace(matchedText, proposed_text);
+          editor.commands.setContent(marked.parse(newMarkdown), true);
+        }
+        window.__archtech_preview_original = null;
+      }
+    };
+
+    const handleRejectContentEdit = (e) => {
+      if (!editor) return;
+      const { original_text, proposed_text } = e.detail;
+      if (original_text && proposed_text) {
+        const baseMarkdown = window.__archtech_preview_original || editor.storage.markdown.getMarkdown();
+        const matchedText = findBestMatch(original_text, baseMarkdown);
+        if (matchedText) {
+          editor.commands.setContent(marked.parse(baseMarkdown), true);
+        }
+        window.__archtech_preview_original = null;
+      }
+    };
+
+    window.addEventListener('preview-content-edit', handlePreviewContentEdit);
+    window.addEventListener('apply-content-edit-accept', handleAcceptContentEdit);
+    window.addEventListener('apply-content-edit-reject', handleRejectContentEdit);
+    return () => {
+      window.removeEventListener('preview-content-edit', handlePreviewContentEdit);
+      window.removeEventListener('apply-content-edit-accept', handleAcceptContentEdit);
+      window.removeEventListener('apply-content-edit-reject', handleRejectContentEdit);
+    };
+  }, [editor]);
 
   // Sync selected blocks to plugin state
   useEffect(() => {
@@ -1569,162 +1698,158 @@ export default function TiptapEditor({
               tippyOptions={{ duration: 150, placement: "top-start" }}
               className="flex bg-white/95 backdrop-blur-xl border border-slate-200 rounded-2xl p-1.5 shadow-2xl"
             >
-              {editor.isActive("table") ? (
-                <div className="flex items-center gap-1">
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().addRowAfter().run()}
-                    title="Add row"
-                  >
-                    <Plus size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().deleteRow().run()}
-                    title="Delete row"
-                    danger
-                  >
-                    <Minus size={15} />
-                  </BubbleBtn>
-                  <BubbleSep />
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().addColumnAfter().run()
-                    }
-                    title="Add col"
-                  >
-                    <Columns size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().deleteColumn().run()}
-                    title="Delete col"
-                    danger
-                  >
-                    <Trash size={15} />
-                  </BubbleBtn>
-                  <BubbleSep />
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().deleteTable().run()}
-                    title="Delete table"
-                    danger
-                  >
-                    <TableIcon size={15} />
-                  </BubbleBtn>
-                </div>
-              ) : (
-                <div className="flex items-center gap-0.5">
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().toggleBold().run()}
-                    active={editor.isActive("bold")}
-                    title="Bold"
-                  >
-                    <Bold size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().toggleItalic().run()}
-                    active={editor.isActive("italic")}
-                    title="Italic"
-                  >
-                    <Italic size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleUnderline().run()
-                    }
-                    active={editor.isActive("underline")}
-                    title="Underline"
-                  >
-                    <UnderlineIcon size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().toggleStrike().run()}
-                    active={editor.isActive("strike")}
-                    title="Strike"
-                  >
-                    <Strikethrough size={15} />
-                  </BubbleBtn>
-                  <BubbleSep />
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleHeading({ level: 1 }).run()
-                    }
-                    active={editor.isActive("heading", { level: 1 })}
-                    title="Heading 1"
-                  >
-                    <Heading1 size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleHeading({ level: 2 }).run()
-                    }
-                    active={editor.isActive("heading", { level: 2 })}
-                    title="Heading 2"
-                  >
-                    <Heading2 size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleHeading({ level: 3 }).run()
-                    }
-                    active={editor.isActive("heading", { level: 3 })}
-                    title="Heading 3"
-                  >
-                    <Heading3 size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleHeading({ level: 4 }).run()
-                    }
-                    active={editor.isActive("heading", { level: 4 })}
-                    title="Heading 4"
-                  >
-                    <Heading4 size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleHeading({ level: 5 }).run()
-                    }
-                    active={editor.isActive("heading", { level: 5 })}
-                    title="Heading 5"
-                  >
-                    <Heading5 size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleHeading({ level: 6 }).run()
-                    }
-                    active={editor.isActive("heading", { level: 6 })}
-                    title="Heading 6"
-                  >
-                    <Heading6 size={15} />
-                  </BubbleBtn>
-                  <BubbleSep />
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleBulletList().run()
-                    }
-                    active={editor.isActive("bulletList")}
-                    title="Bullet List"
-                  >
-                    <List size={15} />
-                  </BubbleBtn>
-                  <BubbleBtn
-                    onClick={() =>
-                      editor.chain().focus().toggleTaskList().run()
-                    }
-                    active={editor.isActive("taskList")}
-                    title="Task List"
-                  >
-                    <CheckSquare size={15} />
-                  </BubbleBtn>
-                  <BubbleSep />
-                  <BubbleBtn
-                    onClick={() => editor.chain().focus().toggleCode().run()}
-                    active={editor.isActive("code")}
-                    title="Inline code"
-                  >
-                    <Code size={15} />
-                  </BubbleBtn>
-                </div>
-              )}
+              {/* {editor.isActive("table") ? (
+                // <div className="flex items-center gap-1">
+                //   <BubbleBtn
+                //     onClick={() => editor.chain().focus().addRowAfter().run()}
+                //     title="Add row"
+                //   >
+                //     <Plus size={15} />
+                //   </BubbleBtn>
+                //   <BubbleBtn
+                //     onClick={() => editor.chain().focus().deleteRow().run()}
+                //     title="Delete row"
+                //     danger
+                //   >
+                //     <Minus size={15} />
+                //   </BubbleBtn>
+                //   <BubbleSep />
+                //   <BubbleBtn
+                //     onClick={() =>
+                //       editor.chain().focus().addColumnAfter().run()
+                //     }
+                //     title="Add col"
+                //   >
+                //     <Columns size={15} />
+                //   </BubbleBtn>
+                //   <BubbleBtn
+                //     onClick={() => editor.chain().focus().deleteColumn().run()}
+                //     title="Delete col"
+                //     danger
+                //   >
+                //     <Trash size={15} />
+                //   </BubbleBtn>
+                //   <BubbleSep />
+                //   <BubbleBtn
+                //     onClick={() => editor.chain().focus().deleteTable().run()}
+                //     title="Delete table"
+                //     danger
+                //   >
+                //     <TableIcon size={15} />
+                //   </BubbleBtn>
+                // </div>
+              ) : ( */}
+              <div className="flex items-center gap-0.5">
+                <BubbleBtn
+                  onClick={() => editor.chain().focus().toggleBold().run()}
+                  active={editor.isActive("bold")}
+                  title="Bold"
+                >
+                  <Bold size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() => editor.chain().focus().toggleItalic().run()}
+                  active={editor.isActive("italic")}
+                  title="Italic"
+                >
+                  <Italic size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() => editor.chain().focus().toggleUnderline().run()}
+                  active={editor.isActive("underline")}
+                  title="Underline"
+                >
+                  <UnderlineIcon size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() => editor.chain().focus().toggleStrike().run()}
+                  active={editor.isActive("strike")}
+                  title="Strike"
+                >
+                  <Strikethrough size={15} />
+                </BubbleBtn>
+                <BubbleSep />
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 1 }).run()
+                  }
+                  active={editor.isActive("heading", { level: 1 })}
+                  title="Heading 1"
+                >
+                  <Heading1 size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 2 }).run()
+                  }
+                  active={editor.isActive("heading", { level: 2 })}
+                  title="Heading 2"
+                >
+                  <Heading2 size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 3 }).run()
+                  }
+                  active={editor.isActive("heading", { level: 3 })}
+                  title="Heading 3"
+                >
+                  <Heading3 size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 4 }).run()
+                  }
+                  active={editor.isActive("heading", { level: 4 })}
+                  title="Heading 4"
+                >
+                  <Heading4 size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 5 }).run()
+                  }
+                  active={editor.isActive("heading", { level: 5 })}
+                  title="Heading 5"
+                >
+                  <Heading5 size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 6 }).run()
+                  }
+                  active={editor.isActive("heading", { level: 6 })}
+                  title="Heading 6"
+                >
+                  <Heading6 size={15} />
+                </BubbleBtn>
+                <BubbleSep />
+                <BubbleBtn
+                  onClick={() =>
+                    editor.chain().focus().toggleBulletList().run()
+                  }
+                  active={editor.isActive("bulletList")}
+                  title="Bullet List"
+                >
+                  <List size={15} />
+                </BubbleBtn>
+                <BubbleBtn
+                  onClick={() => editor.chain().focus().toggleTaskList().run()}
+                  active={editor.isActive("taskList")}
+                  title="Task List"
+                >
+                  <CheckSquare size={15} />
+                </BubbleBtn>
+                <BubbleSep />
+                <BubbleBtn
+                  onClick={() => editor.chain().focus().toggleCode().run()}
+                  active={editor.isActive("code")}
+                  title="Inline code"
+                >
+                  <Code size={15} />
+                </BubbleBtn>
+              </div>
+              {/* )} */}
             </BubbleMenu>
           )}
 
@@ -2039,6 +2164,7 @@ export default function TiptapEditor({
                   blockNumber: prev.length + 1,
                   preview,
                   section: activeSection,
+                  ...(versionNumber ? { version: versionNumber } : {}),
                 },
               ]);
             }

@@ -1,13 +1,17 @@
-import { useState, useEffect, useRef } from 'react';
-import { useOutletContext } from 'react-router-dom';
-import { getApiUrl } from '../utils/apiConfig';
-import { TABS } from './SoftwareWorkspace/types';
-import WorkspaceTopbar from './SoftwareWorkspace/WorkspaceTopbar';
-import EditorPanel from './SoftwareWorkspace/EditorPanel';
-import ChatPanel from './SoftwareWorkspace/ChatPanel';
-import useBuildCompleteStore from '../store/buildCompleteStore';
+import { useState, useEffect, useRef } from "react";
+import { useOutletContext } from "react-router-dom";
+import { getApiUrl } from "../utils/apiConfig";
+import {
+  handleChatSend as utilsHandleChatSend,
+  handleStopChat as utilsHandleStopChat,
+  handleInteractionSubmit as utilsHandleInteractionSubmit,
+} from "../utils/chatUtils";
+import { TABS } from "./SoftwareWorkspace/types";
+import WorkspaceTopbar from "./SoftwareWorkspace/WorkspaceTopbar";
+import EditorPanel from "./SoftwareWorkspace/EditorPanel";
+import ChatPanel from "./SoftwareWorkspace/ChatPanel";
+import useBuildCompleteStore from "../store/buildCompleteStore";
 
-const CHAT_API = getApiUrl('/chat');
 
 /**
  * SoftwareWorkspace - Main workspace component for managing SRS/SDD documents.
@@ -17,12 +21,22 @@ const CHAT_API = getApiUrl('/chat');
  * @param {Object} props.project - The active project object.
  */
 export default function SoftwareWorkspace({ project: activeProject }) {
-  const { srsDoc, setSrsDoc, isGenerating, setIsGenerating, onGenerationComplete } = useOutletContext();
+  const {
+    srsDoc,
+    setSrsDoc,
+    isGenerating,
+    setIsGenerating,
+    onGenerationComplete,
+  } = useOutletContext();
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([
-    { role: 'bot', content: 'Hi! I\'m your AI assistant. Ask me anything about your project, requirements, or SRS document.' }
+    {
+      role: "bot",
+      content:
+        "Hi! I'm your AI assistant. Ask me anything about your project, requirements, or SRS document.",
+    },
   ]);
-  const [chatInput, setChatInput] = useState('');
+  const [chatInput, setChatInput] = useState("");
   const [selectedChatBlocks, setSelectedChatBlocks] = useState([]); // State for Tiptap context sharing
   const [focusedChatBlock, setFocusedChatBlock] = useState(null);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -32,30 +46,35 @@ export default function SoftwareWorkspace({ project: activeProject }) {
   const chatRef = useRef(null);
   const abortControllerRef = useRef(null);
 
-  const [activeMainTab, setActiveMainTab] = useState('srs');
-  const [subTab, setSubTab] = useState('document-template');
+  const [activeMainTab, setActiveMainTab] = useState("srs");
+  const [subTab, setSubTab] = useState("document-template");
   const [chatWidth, setChatWidth] = useState(360);
 
   // Auto-navigate to document generation tab when build completes
   const buildCompleteTab = useBuildCompleteStore((s) => s.activeTab);
-  useEffect(() => {
+  const [prevBuildCompleteTab, setPrevBuildCompleteTab] = useState(buildCompleteTab);
+
+  if (buildCompleteTab !== prevBuildCompleteTab) {
+    setPrevBuildCompleteTab(buildCompleteTab);
     if (buildCompleteTab) {
-      setSubTab('document-generation');
+      setSubTab("document-generation");
     }
-  }, [buildCompleteTab]);
+  }
 
   // Defensive: ensure project directories exist on the backend
   useEffect(() => {
     const projectId = activeProject?.id || activeProject?._id;
     if (projectId) {
-      fetch(`${getApiUrl('/init-project')}?project_id=${projectId}`)
-        .catch(() => {}); // best-effort, don't block
+      fetch(`${getApiUrl("/init-project")}?project_id=${projectId}`).catch(
+        () => {},
+      ); // best-effort, don't block
     }
   }, [activeProject]);
 
   // Auto-scroll chat messages
   useEffect(() => {
-    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    if (chatRef.current)
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [chatMessages, isStreaming]);
 
   /**
@@ -63,226 +82,103 @@ export default function SoftwareWorkspace({ project: activeProject }) {
    * @param {'srs' | 'sdd'} type - Document type to generate.
    */
   const handleGenerateDoc = async (type) => {
-    setIsGenerating(prev => ({ ...prev, srs: true }));
-    setSrsDoc('');
+    setIsGenerating((prev) => ({ ...prev, srs: true }));
+    setSrsDoc("");
     try {
-      const res = await fetch(getApiUrl('/generate-document-stream'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requirement_ids: [], template_type: type, project_id: activeProject?.id }),
+      const res = await fetch(getApiUrl("/generate-document-stream"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requirement_ids: [],
+          template_type: type,
+          project_id: activeProject?.id,
+        }),
       });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = '';
+      let buffer = "";
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
+        const lines = buffer.split("\n\n");
         buffer = lines.pop();
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
+          if (line.startsWith("data: ")) {
             try {
               const data = JSON.parse(line.slice(6));
-              if (data.heading) setChatMessages(prev => [...prev, { role: 'bot', content: `Building: ${data.heading}` }]);
+              if (data.heading)
+                setChatMessages((prev) => [
+                  ...prev,
+                  { role: "bot", content: `Building: ${data.heading}` },
+                ]);
               if (data.content) {
-                setSrsDoc(prev => prev ? prev + '\n\n' + data.content : data.content);
+                setSrsDoc((prev) =>
+                  prev ? prev + "\n\n" + data.content : data.content,
+                );
               }
-              if (data.message) setChatMessages(prev => [...prev, { role: 'bot', content: data.message }]);
-            } catch (_) {}
-          }
-        }
-      }
-      setChatMessages(prev => [...prev, { role: 'bot', content: 'SRS generated successfully.' }]);
-    } catch {
-      setChatMessages(prev => [...prev, { role: 'bot', content: 'Failed to generate SRS. Please try again.' }]);
-    } finally {
-      setIsGenerating(prev => ({ ...prev, srs: false }));
-    }
-  };
-
-  const handleCancelGeneration = () => {
-    setIsGenerating(prev => ({ ...prev, srs: false }));
-  };
-
-  const handleChatSend = async () => {
-    if (!chatInput.trim() || isStreaming || isAwaitingUserInput) return;
-    const userMsg = chatInput.trim();
-    setChatInput('');
-    setChatMessages(prev => [...prev, { role: 'user', content: userMsg }]);
-    setIsStreaming(true);
-
-    let finalPayloadMsg = userMsg;
-    if (selectedChatBlocks.length > 0) {
-      const contextStr = selectedChatBlocks.map(b => b.text).join('\\n\\n');
-      finalPayloadMsg = `[Context from Editor:\\n${contextStr}\\n]\\n\\n${userMsg}`;
-      setSelectedChatBlocks([]);
-    }
-
-    // Create session if needed
-    if (!currentSessionId) {
-      setCurrentSessionId('new');
-    }
-
-    const projectId = activeProject?.id || activeProject?._id || 'default';
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
-    try {
-      const res = await fetch(`${CHAT_API}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: currentSessionId === 'new' ? undefined : currentSessionId,
-          message: finalPayloadMsg,
-          project_id: projectId,
-        }),
-        signal: abortController.signal,
-      });
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let linesBuffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        linesBuffer += decoder.decode(value, { stream: true });
-        const lines = linesBuffer.split('\n');
-        linesBuffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event = JSON.parse(line.slice(6));
-              const { type, content } = event;
-
-              if (type === 'session_created') {
-                setCurrentSessionId(event.session_id);
-              } else if (type === 'text_delta') {
-                setChatMessages(prev => {
-                  const last = prev[prev.length - 1];
-                  if (last?.role === 'bot' && last._streaming) {
-                    return [...prev.slice(0, -1), { ...last, content: last.content + (content || '') }];
-                  }
-                  return [...prev, { role: 'bot', content: (content || ''), _streaming: true }];
-                });
-              } else if (type === 'tool_use_start') {
-                setChatMessages(prev => {
-                  const newPrev = [...prev];
-                  const last = newPrev[newPrev.length - 1];
-                  if (last?.role === 'bot' && last._streaming) {
-                    // Close the streaming bot text before starting a tool execution
-                    newPrev[newPrev.length - 1] = { ...last, _streaming: false };
-                  }
-                  return [
-                    ...newPrev,
-                    { role: 'tool', tool_call_id: event.tool_call_id, name: event.name, input: event.input, status: 'executing' }
-                  ];
-                });
-              } else if (type === 'tool_use_complete') {
-                setChatMessages(prev => prev.map(m => 
-                  m.role === 'tool' && m.tool_call_id === event.tool_call_id 
-                    ? { ...m, status: 'completed', output: event.output } 
-                    : m
-                ));
-              } else if (type === 'tool_error') {
-                setChatMessages(prev => prev.map(m => 
-                  m.role === 'tool' && m.tool_call_id === event.tool_call_id 
-                    ? { ...m, status: 'error', error: event.error } 
-                    : m
-                ));
-              } else if (type === 'tool_interaction_request') {
-                setChatMessages(prev => prev.map(m => 
-                  m.role === 'tool' && m.tool_call_id === event.tool_call_id 
-                    ? { ...m, status: 'awaiting_input', ui_type: event.ui_type, options: event.options, prompt: event.prompt } 
-                    : m
-                ));
-              } else if (type === 'done') {
-                // Finalize streaming message
-                setChatMessages(prev => {
-                  const last = prev[prev.length - 1];
-                  if (last?.role === 'bot' && last._streaming) {
-                    return [...prev.slice(0, -1), { ...last, _streaming: false }];
-                  }
-                  return prev;
-                });
-                setIsAwaitingUserInput(false);
-                setPendingToolCallId(null);
-              } else if (type === 'error') {
-                setChatMessages(prev => [
+              if (data.message)
+                setChatMessages((prev) => [
                   ...prev,
-                  { role: 'bot', content: `Error: ${event.message}` },
+                  { role: "bot", content: data.message },
                 ]);
-              } else if (type === 'interaction_paused') {
-                setChatMessages(prev => [
-                  ...prev,
-                  {
-                    role: 'tool',
-                    tool_call_id: event.tool_call_id,
-                    name: 'RequestUserInput',
-                    input: {},
-                    status: 'awaiting_input',
-                    ui_type: 'select',
-                    options: [],
-                    prompt: 'Awaiting user response...',
-                    title: 'Request User Input',
-                  },
-                ]);
-                setIsAwaitingUserInput(true);
-                setPendingToolCallId(event.tool_call_id);
-              }
-            } catch {
-              // Skip malformed JSON
+            } catch (exception) {
+              console.error(exception);
             }
           }
         }
       }
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        setChatMessages(prev => [
-          ...prev,
-          { role: 'bot', content: `Error: ${err.message}` },
-        ]);
-      }
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "bot", content: "SRS generated successfully." },
+      ]);
+    } catch {
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "bot", content: "Failed to generate SRS. Please try again." },
+      ]);
     } finally {
-      setIsStreaming(false);
-      abortControllerRef.current = null;
+      setIsGenerating((prev) => ({ ...prev, srs: false }));
     }
+  };
+
+  const handleCancelGeneration = () => {
+    setIsGenerating((prev) => ({ ...prev, srs: false }));
+  };
+
+  const handleChatSend = () => {
+    utilsHandleChatSend({
+      chatInput,
+      isStreaming,
+      isAwaitingUserInput,
+      selectedChatBlocks,
+      currentSessionId,
+      activeProject,
+      abortControllerRef,
+      setChatInput,
+      setChatMessages,
+      setIsStreaming,
+      setSelectedChatBlocks,
+      setCurrentSessionId,
+      setIsAwaitingUserInput,
+      setPendingToolCallId,
+    });
   };
 
   const handleStopChat = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    utilsHandleStopChat(abortControllerRef);
   };
 
-  const handleInteractionSubmit = async (session_id, tool_call_id, response) => {
-    try {
-      const res = await fetch(getApiUrl('/chat/interact'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id,
-          tool_call_id,
-          response,
-        }),
-      });
-      const data = await res.json();
-      if (data?.status === 'resumed') {
-        setChatMessages(prev => prev.map(m =>
-          m.role === 'tool' && m.tool_call_id === tool_call_id
-            ? { ...m, status: 'completed', output: `User selection: ${JSON.stringify(response)}` }
-            : m
-        ));
-      }
-    } catch (err) {
-      setChatMessages(prev => [...prev, { role: 'bot', content: `Interaction error: ${err.message}` }]);
-    }
+  const handleInteractionSubmit = (session_id, tool_call_id, response) => {
+    utilsHandleInteractionSubmit({
+      session_id,
+      tool_call_id,
+      response,
+      setChatMessages,
+    });
   };
 
-  const isGenActive = isGenerating.srs && activeMainTab === 'srs';
+  const isGenActive = isGenerating.srs && activeMainTab === "srs";
 
   return (
     <>
@@ -307,10 +203,10 @@ export default function SoftwareWorkspace({ project: activeProject }) {
             isGenerating={isGenActive}
             onTabChange={(tab) => {
               setActiveMainTab(tab);
-              if (tab !== 'srs') setSubTab('document-template');
+              if (tab !== "srs") setSubTab("document-template");
             }}
             chatOpen={chatOpen}
-            onChatToggle={() => setChatOpen(o => !o)}
+            onChatToggle={() => setChatOpen((o) => !o)}
           />
 
           {/* Workspace Row */}
@@ -342,22 +238,25 @@ export default function SoftwareWorkspace({ project: activeProject }) {
                   e.preventDefault();
                   const startX = e.clientX;
                   const startWidth = chatWidth;
-                  
+
                   const onMouseMove = (eMove) => {
                     // Reverse the delta since the panel is on the right
-                    const newWidth = Math.max(300, Math.min(800, startWidth - (eMove.clientX - startX)));
+                    const newWidth = Math.max(
+                      300,
+                      Math.min(800, startWidth - (eMove.clientX - startX)),
+                    );
                     setChatWidth(newWidth);
                   };
-                  
+
                   const onMouseUp = () => {
-                    document.removeEventListener('mousemove', onMouseMove);
-                    document.removeEventListener('mouseup', onMouseUp);
-                    document.body.style.cursor = 'default';
+                    document.removeEventListener("mousemove", onMouseMove);
+                    document.removeEventListener("mouseup", onMouseUp);
+                    document.body.style.cursor = "default";
                   };
-                  
-                  document.addEventListener('mousemove', onMouseMove);
-                  document.addEventListener('mouseup', onMouseUp);
-                  document.body.style.cursor = 'col-resize';
+
+                  document.addEventListener("mousemove", onMouseMove);
+                  document.addEventListener("mouseup", onMouseUp);
+                  document.body.style.cursor = "col-resize";
                 }}
               >
                 <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-primary-500/10 transition-colors" />

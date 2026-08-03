@@ -19,12 +19,13 @@ import VersionPanel from './VersionPanel';
  * @param {Object} [props.project] - Active project object.
  * @param {Array} props.selectedChatBlocks
  * @param {Function} props.setSelectedChatBlocks
+ * @param {Object} props.focusedChatBlock
+ * @param {Function} props.setFocusedChatBlock
  */
 export default function EditorPanel({
   activeMainTab, subTab, onSubTabChange,
   isFullscreen, onFullscreenToggle, onGenerate, isGenActive, srsDoc, setSrsDoc, onCancel, onGenerationComplete,
-  project, selectedChatBlocks, setSelectedChatBlocks,
-  focusedChatBlock, setFocusedChatBlock
+  project, selectedChatBlocks, setSelectedChatBlocks, focusedChatBlock, setFocusedChatBlock
 }) {
   const isSdd = activeMainTab === 'sdd';
 

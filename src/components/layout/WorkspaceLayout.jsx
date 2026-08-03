@@ -1,20 +1,22 @@
 import { useState, useCallback } from 'react';
 import { NavLink, Outlet, useParams } from 'react-router-dom';
 import useBuildCompleteStore from '../../store/buildCompleteStore';
-import { 
-  BarChart3, 
-  Cpu, 
-  Code2, 
-  Settings, 
-  ChevronRight, 
+import usePendingDeleteStore from '../../store/pendingDeleteStore';
+import {
+  BarChart3,
+  Cpu,
+  Code2,
+  Settings,
+  ChevronRight,
   ChevronLeft,
-  FileText, 
+  FileText,
   LogOut,
   Layers,
   Bell,
   Search,
   Database,
-  Menu
+  Menu,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -44,6 +46,7 @@ export default function WorkspaceLayout({ project }) {
   };
 
   const buildComplete = useBuildCompleteStore();
+  const pendingDelete = usePendingDeleteStore();
 
   const onGenerationComplete = useCallback((tab) => {
     buildComplete.setActiveTab(tab);
@@ -224,6 +227,48 @@ export default function WorkspaceLayout({ project }) {
                   className="flex-1 px-5 py-3 bg-gradient-to-r from-slate-800 to-slate-900 hover:from-primary-600 hover:to-indigo-600 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-slate-300/50 hover:shadow-primary-200/50 active:scale-95"
                 >
                   View Document
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Delete Confirmation Dialog */}
+        {pendingDelete.filename && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              className="bg-white rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-md overflow-hidden"
+            >
+              <div className="p-8 text-center">
+                {/* Trash Icon */}
+                <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center shadow-lg shadow-red-200/50">
+                  <Trash2 size={28} className="text-white" />
+                </div>
+
+                <h3 className="text-xl font-black text-slate-900 mb-2">Delete Section</h3>
+                <p className="text-sm text-slate-500 mb-1">
+                  Are you sure you want to delete this section?
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  This action cannot be undone.
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="px-8 pb-8 flex items-center gap-3">
+                <button
+                  onClick={pendingDelete.dismiss}
+                  className="flex-1 px-5 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest rounded-2xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={pendingDelete.execute}
+                  className="flex-1 px-5 py-3 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-red-200/50 hover:shadow-red-300/50 active:scale-95"
+                >
+                  Delete
                 </button>
               </div>
             </motion.div>

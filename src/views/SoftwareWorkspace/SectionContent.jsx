@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import TiptapEditor from '../../components/TiptapEditor';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Lock } from 'lucide-react';
 
 // ─── Custom remark plugin: transform [!TYPE] blockquotes into callouts ────────
 function remarkCallouts() {
@@ -50,8 +50,9 @@ const CALLOUT_LABELS = {
  * @param {'editor' | 'preview'} props.viewMode - Which view mode to show.
  * @param {(content: string) => void} props.onContentChange - Callback when content changes.
  * @param {boolean} props.isSaving - Whether a save operation is in progress.
+ * @param {boolean} [props.isSectionLocked] - Whether this section is locked (forces preview-only).
  */
-export default function SectionContent({ content, viewMode, onContentChange, isSaving, selectedChatBlocks, setSelectedChatBlocks }) {
+export default function SectionContent({ content, viewMode, onContentChange, isSaving, isSectionLocked, selectedChatBlocks, setSelectedChatBlocks }) {
   const [contentState, setContentState] = useState(content);
 
   // Sync external content changes (from API fetch) into local state
@@ -74,11 +75,19 @@ export default function SectionContent({ content, viewMode, onContentChange, isS
     );
   }
 
+  const effectiveViewMode = viewMode;
   const previewContent = useMemo(() => contentState || 'No content.', [contentState]);
 
   return (
     <div className="h-full overflow-hidden bg-[#fafafa] relative">
-      {viewMode === 'editor' ? (
+      {/* Lock indicator for locked sections */}
+      {isSectionLocked && (
+        <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-[11px] font-semibold">
+          <Lock size={12} />
+          Section is locked
+        </div>
+      )}
+      {effectiveViewMode === 'editor' ? (
         <TiptapEditor
           content={contentState}
           onChange={handleChange}

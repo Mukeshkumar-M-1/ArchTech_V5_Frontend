@@ -123,6 +123,47 @@ const AIInsightPanel = ({
   );
 };
 
+
+
+//-------------------------------------------------------
+// Convert JSON explanation to flat markdown for Tiptap editor
+//-------------------------------------------------------
+function explanationToMarkdownForEdit(content) {
+  if (!content) return content;
+  const trimmed = content.trim();
+  const isJson =
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"));
+  if (isJson) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      // Handle both { key: value } and [{ key: value }, ...] structures
+      const entries = parsed.map ? parsed : [parsed];
+      let md = "";
+      for (const block of entries) {
+        for (const [key, value] of Object.entries(block)) {
+          const label = `## ${key.replace(/_/g, " ").toUpperCase()}\n\n`;
+          if (typeof value === "string") {
+            const cleaned = value;
+            md += cleaned + "\n\n";
+          } else if (Array.isArray(value)) {
+            md += value.map((v) => `- ${v.replace(/\*\*/g, "")}`).join("\n") + "\n\n";
+          } else if (typeof value === "object" && value !== null) {
+            md += JSON.stringify(value, null, 2) + "\n\n";
+          } else {
+            md += String(value) + "\n\n";
+          }
+        }
+      }
+      return md;
+    } catch {
+      return content;
+    }
+  }
+  return content;
+}
+//-------------------------------------------------------
+
 export default function RequirementListing({ project }) {
   const [requirements, setRequirements] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1134,11 +1175,11 @@ export default function RequirementListing({ project }) {
                             className="prose prose-slate max-w-none prose-p:text-slate-900 prose-p:text-[15px] prose-p:font-medium prose-p:leading-relaxed mb-6 bg-white border border-slate-200/60 shadow-sm rounded-[12px] p-8 hover:border-primary-200 hover:bg-primary-50/5 hover:shadow-xl hover:shadow-primary-50/50 transition-all duration-300 cursor-text border-l-[3px] border-l-slate-100 hover:border-l-blue-500 max-h-[450px] overflow-y-auto scrollbar-pro group/block"
                             onClick={() => {
                               setEditingId(req.id);
-                              setEditText(req.explanation);
+                              setEditText(explanationToMarkdownForEdit(req.explanation));
                             }}
                           >
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {req.explanation}
+                              {explanationToMarkdownForEdit(req.explanation)}
                             </ReactMarkdown>
                           </div>
                         )}
@@ -1148,7 +1189,7 @@ export default function RequirementListing({ project }) {
                       {aiPanelId === req.id && (
                         <AIInsightPanel
                           reqId={req.id}
-                          reqText={req.explanation}
+                          reqText={explanationToMarkdownForEdit(req.explanation)}
                           summarizingId={summarizingId}
                           handleAIInsight={handleAIInsight}
                           onCancel={() => setAiPanelId(null)}
@@ -1200,7 +1241,7 @@ export default function RequirementListing({ project }) {
                             <button
                               onClick={() => {
                                 setEditingId(req.id);
-                                setEditText(req.text);
+                                setEditText(explanationToMarkdownForEdit(req.explanation));
                               }}
                               className="text-[12px] font-black text-primary-600 bg-primary-50 hover:bg-primary-100 border border-primary-100 px-4 py-2 rounded-lg transition-colors"
                             >
@@ -1704,7 +1745,7 @@ export default function RequirementListing({ project }) {
                         {/* Requirement Explanation */}
                         <div className="prose prose-slate max-w-none prose-p:text-slate-900 prose-p:text-[15px] prose-p:font-medium prose-p:leading-relaxed bg-white border border-slate-200/60 shadow-sm rounded-[12px] p-8 border-l-[3px] border-l-slate-100 max-h-[600px] overflow-y-auto scrollbar-pro">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {req.explanation}
+                            {explanationToMarkdownForEdit(req.explanation)}
                           </ReactMarkdown>
                         </div>
 
@@ -1805,7 +1846,7 @@ export default function RequirementListing({ project }) {
                 <div className="flex-1 overflow-y-auto p-12 scrollbar-pro">
                   <div className="prose prose-slate max-w-none prose-p:text-slate-800 prose-p:text-[18px] prose-p:leading-relaxed prose-headings:text-slate-900 prose-headings:font-black prose-table:border prose-table:border-slate-200 prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-blockquote:border-l-blue-500 prose-blockquote:bg-primary-50/50 prose-blockquote:p-6 prose-blockquote:rounded-r-2xl">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {req.explanation}
+                      {explanationToMarkdownForEdit(req.explanation)}
                     </ReactMarkdown>
                   </div>
                 </div>

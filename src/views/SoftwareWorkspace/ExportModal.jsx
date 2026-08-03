@@ -2,7 +2,14 @@ import { useState } from 'react';
 import { Download, X, FileText, Loader2 } from 'lucide-react';
 import { getApiUrl } from '../../utils/apiConfig';
 
-export default function ExportModal({ onClose, displayDoc }) {
+export default function ExportModal({
+  onClose,
+  displayDoc,
+  project,
+  viewingVersion,
+  templateType,
+  isGenerating,
+}) {
   const [filename, setFilename] = useState('Document');
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState(null);
@@ -12,19 +19,25 @@ export default function ExportModal({ onClose, displayDoc }) {
       setError("No document content to export.");
       return;
     }
-    
+
     setIsExporting(true);
     setError(null);
     try {
+      const projectId = project?.id || project?._id;
+      const useSectionAware =
+        !isGenerating && projectId && viewingVersion;
+
       const response = await fetch(getApiUrl('/export-document'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          content: displayDoc,
           format: 'odt',
-          filename: filename || 'Document'
+          filename: filename || 'Document',
+          ...(useSectionAware
+            ? { project_id: projectId, version: viewingVersion, template_type: templateType || 'srs' }
+            : { content: displayDoc }),
         }),
       });
 

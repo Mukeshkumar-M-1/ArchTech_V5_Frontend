@@ -9,11 +9,11 @@ import { getApiUrl } from '../utils/apiConfig';
  * @param {AbortSignal} [options.signal] - Optional AbortController signal to cancel the stream.
  * @returns {AsyncGenerator<{type: string, [key: string]: any}>} SSE event stream.
  */
-export async function* sendChatMessage({ message, session_id, project_id, signal }) {
+export async function* sendChatMessage({ message, session_id, project_id, signal, contextBlocks }) {
   const res = await fetch(getApiUrl('/chat/send'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id, message, project_id }),
+    body: JSON.stringify({ session_id, message, project_id, context_blocks: contextBlocks }),
     signal,
   });
 

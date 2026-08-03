@@ -25,6 +25,7 @@ import {
   fetchDocumentVersions,
   fetchVersionSections,
   fetchVersionContent,
+  updateVersionContent,
 } from "../../api/templateApi";
 import PreviewModal from "./PreviewModal";
 import ExportModal from "./ExportModal";
@@ -495,6 +496,8 @@ export default function GenerationPanel({
   }, [focusedChatBlock, selectedSectionFile]);
   const [viewingVersion, setViewingVersion] = useState(null);
   const [totalVersions, setTotalVersions] = useState(0);
+  const [isTocOpen, setIsTocOpen] = useState(true);
+  const [tocCollapsed, setTocCollapsed] = useState(new Set());
 
   // Modals state
   const [showPreview, setShowPreview] = useState(false);
@@ -520,6 +523,42 @@ export default function GenerationPanel({
   const docContentRef = useRef("");
   const isResizingRef = useRef(false);
   const currentTurnRef = useRef(0);
+  const saveVersionRef = useRef(null);
+
+  // Auto-save generated version edits with 1000ms debounce
+  useEffect(() => {
+    if (saveVersionRef.current) saveVersionRef.current.cancel();
+    
+    // Uses lodash debounce which is already imported as debounce in TemplatePanel (wait we need to import it here)
+    // Actually, lodash debounce might not be imported in GenerationPanel. Let's just use a simple setTimeout debounce.
+    saveVersionRef.current = {
+      timeout: null,
+      save: (projectId, sectionFilename, version, content) => {
+        if (!projectId || !sectionFilename || !version) return;
+        if (saveVersionRef.current.timeout) clearTimeout(saveVersionRef.current.timeout);
+        saveVersionRef.current.timeout = setTimeout(async () => {
+          try {
+            await updateVersionContent(projectId, sectionFilename, version, content);
+          } catch (err) {
+            console.error('Failed to save version content:', err);
+          }
+        }, 1000);
+      },
+      cancel: () => {
+        if (saveVersionRef.current?.timeout) clearTimeout(saveVersionRef.current.timeout);
+      }
+    };
+
+    return () => saveVersionRef.current?.cancel();
+  }, []);
+
+  const handleVersionContentChange = useCallback((newContent) => {
+    setSelectedSectionContent(newContent);
+    const projectId = project?.id || project?._id;
+    if (projectId && selectedSectionFile && viewingVersion) {
+      saveVersionRef.current?.save(projectId, selectedSectionFile, viewingVersion, newContent);
+    }
+  }, [project, selectedSectionFile, viewingVersion]);
 
   // Sidebar width — default 384px (w-64), range 256-500px
   const [sidebarWidth, setSidebarWidth] = useState(384);
@@ -814,7 +853,7 @@ export default function GenerationPanel({
         }
         if (!cancelled) {
           setLatestVersionDoc(md.trim());
-          setSelectedSectionFile(null);
+          setSelectedSectionFile(secs[0]?.section_filename || null);
           setSelectedSectionContent("");
           setViewingVersion(latest.version);
           setTotalVersions(versions.length);
@@ -868,7 +907,7 @@ export default function GenerationPanel({
         if (cancelled) return;
         const secs = data.sections || [];
         setLatestVersionSections(secs);
-        setSelectedSectionFile(null);
+        setSelectedSectionFile(secs[0]?.section_filename || null);
         setSelectedSectionContent("");
         let md = "";
         for (const sec of secs) {
@@ -910,6 +949,57 @@ export default function GenerationPanel({
   const displayDoc = isGenerating
     ? docContent
     : selectedSectionContent || fullDoc;
+
+  // TOC heading extraction from the latest version document
+  const tocHeadings = latestVersionDoc
+    ? latestVersionDoc
+        .split('\n')
+        .filter(line => /^#{1,6}\s+/.test(line))
+        .map((line, index) => {
+          const match = line.match(/^(#{1,6})\s+(.*)/);
+          const text = match[2].trim();
+          return {
+            level: match[1].length,
+            text,
+            slug: text.toLowerCase().replace(/[^\w]+/g, '-'),
+            originalIndex: index,
+          };
+        })
+    : [];
+
+  // Compute visible headings with collapse state
+  const tocVisibleHeadings = [];
+  let tocHideThreshold = null;
+  for (let i = 0; i < tocHeadings.length; i++) {
+    const h = tocHeadings[i];
+    if (tocHideThreshold !== null && h.level <= tocHideThreshold) {
+      tocHideThreshold = null;
+    }
+    if (tocHideThreshold === null) {
+      const hasChildren = i + 1 < tocHeadings.length && tocHeadings[i + 1].level > h.level;
+      const isCollapsed = tocCollapsed.has(i);
+      tocVisibleHeadings.push({ ...h, hasChildren, isCollapsed });
+      if (isCollapsed) tocHideThreshold = h.level;
+    }
+  }
+
+  const toggleTocHeading = useCallback((index) => {
+    setTocCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }, []);
+
+  const scrollToTocHeading = useCallback((slug) => {
+    const editor = containerRef.current?.querySelector('.prose');
+    if (editor) {
+      const id = slug.toLowerCase().replace(/[^\w]+/g, '-');
+      const el = editor.querySelector(`[id="${id}"]`) || editor.querySelector(`[id="${slug}"]`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
 
   return (
     <div ref={containerRef} className="flex flex-1 overflow-hidden select-none">
@@ -1130,10 +1220,11 @@ export default function GenerationPanel({
           {displayDoc ? (
             <TiptapEditor
               content={displayDoc}
-              onChange={() => {}}
+              onChange={handleVersionContentChange}
               project={project}
               requirementId="SRS_DOC"
               className="h-full border-none shadow-none rounded-none"
+              versionNumber={viewingVersion}
               selectedChatBlocks={selectedChatBlocks}
               setSelectedChatBlocks={setSelectedChatBlocks}
               activeSection={selectedSectionFile}
@@ -1304,6 +1395,69 @@ export default function GenerationPanel({
                       <ChevronRight size={14} className="text-gray-600" />
                     </button>
                   </div>
+
+                  {/* TOC Toggle */}
+                  <button
+                    onClick={() => setIsTocOpen(!isTocOpen)}
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl bg-gray-50/80 border border-gray-100 mt-4 mb-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="p-1 bg-white rounded-md shadow-sm border border-gray-100">
+                        <List size={12} className="text-gray-600" />
+                      </div>
+                      <span className="font-bold tracking-wide uppercase text-[10px] text-gray-600">
+                        Table of Contents
+                      </span>
+                    </div>
+                    {isTocOpen ? (
+                      <ChevronDown size={12} className="text-gray-400" />
+                    ) : (
+                      <ChevronRight size={12} className="text-gray-400" />
+                    )}
+                  </button>
+
+                  {/* TOC List */}
+                  {isTocOpen && (
+                    <div className="overflow-hidden">
+                      {tocVisibleHeadings.length > 0 ? (
+                        <ul className="space-y-0.5">
+                          {tocVisibleHeadings.map((h) => (
+                            <li
+                              key={h.originalIndex}
+                              className="flex items-start gap-1"
+                              style={{ paddingLeft: `${(h.level - 1) * 12}px` }}
+                            >
+                              {h.hasChildren ? (
+                                <button
+                                  onClick={() => toggleTocHeading(h.originalIndex)}
+                                  className="p-0.5 hover:bg-gray-100 rounded mt-0.5 text-gray-400 flex-shrink-0"
+                                >
+                                  {h.isCollapsed ? (
+                                    <ChevronRight size={12} />
+                                  ) : (
+                                    <ChevronDown size={12} />
+                                  )}
+                                </button>
+                              ) : (
+                                <div className="w-[18px] flex-shrink-0" />
+                              )}
+                              <span
+                                onClick={() => scrollToTocHeading(h.slug)}
+                                className={`text-xs ${h.level === 1 ? 'font-bold text-gray-700' : 'text-gray-500'} hover:text-blue-600 cursor-pointer transition-colors leading-tight py-1`}
+                                title={h.text}
+                              >
+                                {h.text}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-xs text-gray-400 text-center py-4">
+                          No headings found
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="py-5 text-center text-xs text-gray-400">
@@ -1335,6 +1489,10 @@ export default function GenerationPanel({
       {showExport && (
         <ExportModal
           displayDoc={fullDoc}
+          project={project}
+          viewingVersion={viewingVersion}
+          templateType={activeMainTab}
+          isGenerating={isGenerating}
           onClose={() => setShowExport(false)}
         />
       )}

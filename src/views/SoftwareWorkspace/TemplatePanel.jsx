@@ -6,17 +6,36 @@ import {
   fetchSectionContent,
   deleteSectionFile,
   createSectionFile,
+  createTemplateType,
   generateSections,
   cancelGeneration,
   updateSectionContent,
   fetchPhase3Analysis,
   fetchProgress,
+  fetchTemplateTypeRegistry,
+  fetchTemplateLocks,
+  fetchSelectedTemplate,
+  selectProjectTemplateType,
 } from '../../api/templateApi';
 import SectionList from './SectionList';
 import SectionToolbar from './SectionToolbar';
 import SectionContent from './SectionContent';
+import TemplateDetailsDialog from './TemplateDetailsDialog';
 import JsonViewer from './JsonViewer';
 import ErrorBanner from './ErrorBanner';
+import { Plus, Loader2, FilePlus } from 'lucide-react';
+
+/**
+ * Normalize template registry into a flat array for UI consumption.
+ * The backend returns templates as an object keyed by name:
+ *   { "Standard": { ... }, "Compact": { ... } }
+ * This converts it to: [ { name: "Standard", ... }, { name: "Compact", ... } ]
+ */
+function _toTemplateArray(templatesObj) {
+  if (!templatesObj) return [];
+  if (Array.isArray(templatesObj)) return templatesObj;
+  return Object.entries(templatesObj).map(([name, entry]) => ({ name, ...entry }));
+}
 
 /**
  * TemplatePanel - Orchestrates template section management with full backend integration.
@@ -44,6 +63,23 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
   const [isSaving, setIsSaving] = useState(false);
   const [jsonViewerWidth, setJsonViewerWidth] = useState(400);
 
+  // Template type management state
+  const [selectedTemplateName, setSelectedTemplateName] = useState('Standard');
+  const [availableTemplates, setAvailableTemplates] = useState([]);
+  const [templateLockStateMap, setTemplateLockStateMap] = useState({});
+  const [showTemplateDialog, setShowTemplateDialog] = useState(false);
+
+  // New template creation state
+  const [showCreateTemplateForm, setShowCreateTemplateForm] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
+
+  // Computed: is the current template type locked (prevents deletion)?
+  const currentTemplateEntry = availableTemplates?.find(
+    (tmpl) => tmpl.name === selectedTemplateName,
+  );
+  const templateLocked = currentTemplateEntry?.locked ?? false;
+
   // Refs for polling
   const progressIntervalRef = useRef(null);
   const projectRef = useRef(project);
@@ -52,6 +88,30 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
   // Keep refs in sync
   useEffect(() => { projectRef.current = project; }, [project]);
   useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating]);
+
+  // ─── Load template registry on mount ─────────────────────────────
+  useEffect(() => {
+    if (!project?.id) return;
+    fetchTemplateTypeRegistry(project.id)
+      .then((registryData) => {
+        setAvailableTemplates(_toTemplateArray(registryData?.templates));
+      })
+      .catch((err) => {
+        addToast('error', `Failed to load templates: ${err.message}`);
+      });
+  }, [project?.id, addToast]);
+
+  // ─── Load per-project section locks on mount ─────────────────────
+  useEffect(() => {
+    if (!project?.id) return;
+    fetchTemplateLocks(project.id)
+      .then((lockMap) => {
+        setTemplateLockStateMap(lockMap || {});
+      })
+      .catch(() => {
+        // Lock state is optional; default to empty
+      });
+  }, [project?.id]);
 
   // ─── Load sections on mount ──────────────────────────────────────
   useEffect(() => {
@@ -63,10 +123,20 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
     // Clear progress on project change
     setProgress(null);
 
-    fetchSections(project.id)
+    // Fetch the persisted selected template name
+    fetchSelectedTemplate(project.id)
+      .then((selectedData) => {
+        if (cancelled) return;
+        const persistedTemplateName = selectedData?.template_type ?? 'Standard';
+        setSelectedTemplateName(persistedTemplateName);
+        return fetchSections(project.id, persistedTemplateName);
+      })
       .then((data) => {
         if (cancelled) return;
         setSections(data);
+        if (data?.length && !selectedFilename) {
+          setSelectedFilename(data[0].filename);
+        }
         setIsLoading(false);
       })
       .catch((err) => {
@@ -85,7 +155,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
     fetchSectionContent(project.id, selectedFilename)
       .then((data) => setContent(data.content))
       .catch((err) => setError(err.message));
-  }, [selectedFilename, project?.id]);
+  }, [selectedFilename, project?.id, selectedTemplateName]);
 
   // ─── Progress polling ────────────────────────────────────────────
   const startProgressPolling = useCallback((projectId) => {
@@ -154,12 +224,16 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
 
   // ─── Auto-save with 100ms debounce ───────────────────────────────
   const saveRef = useRef(null);
+  const selectedFilenameRef = useRef(selectedFilename);
+
+  useEffect(() => { selectedFilenameRef.current = selectedFilename; }, [selectedFilename]);
 
   useEffect(() => {
     if (saveRef.current) saveRef.current.cancel();
 
-    // Use a ref for the debounced function to avoid recreation on every render
-    saveRef.current = debounce(async (projectId, filename, newContent) => {
+    // Use refs for filename so the debounced fn never captures stale values
+    saveRef.current = debounce(async (projectId, newContent) => {
+      const filename = selectedFilenameRef.current;
       if (!projectId || !filename) return;
       setIsSaving(true);
       try {
@@ -180,8 +254,27 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
   }, []);
 
   const debouncedSave = useCallback((newContent) => {
-    saveRef.current?.(project?.id, selectedFilename, newContent);
-  }, [project?.id, selectedFilename]);
+    saveRef.current?.(project?.id, newContent);
+  }, [project?.id]);
+
+  // ─── Template creation handler ───────────────────────────────────
+  const handleCreateTemplate = useCallback(async () => {
+    if (!newTemplateName.trim() || isCreatingTemplate || !project?.id) return;
+    setIsCreatingTemplate(true);
+    try {
+      const result = await createTemplateType(project.id, newTemplateName.trim());
+      addToast('success', result.message || `Template '${newTemplateName.trim()}' created`);
+      setNewTemplateName('');
+      setShowCreateTemplateForm(false);
+      // Refresh template registry
+      const registryData = await fetchTemplateTypeRegistry(project.id);
+      setAvailableTemplates(_toTemplateArray(registryData?.templates));
+    } catch (err) {
+      addToast('error', `Failed to create template: ${err.message}`);
+    } finally {
+      setIsCreatingTemplate(false);
+    }
+  }, [newTemplateName, isCreatingTemplate, project?.id, addToast]);
 
   // ─── Handlers ────────────────────────────────────────────────────
 
@@ -200,8 +293,11 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       startProgressPolling(project.id);
 
       // Refresh sections list
-      const updated = await fetchSections(project.id);
+      const updated = await fetchSections(project.id, selectedTemplateName);
       setSections(updated);
+      if (updated?.length && !selectedFilename) {
+        setSelectedFilename(updated[0].filename);
+      }
     } catch (err) {
       setError(err.message);
       addToast('error', `Generation failed: ${err.message}`);
@@ -253,7 +349,10 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       addToast('success', `Created: ${result.filename}`);
       setNewSectionName('');
       setShowCreateModal(false);
-      fetchSections(project.id).then(setSections);
+      fetchSections(project.id, selectedTemplateName).then((updated) => {
+        setSections(updated);
+        setSelectedFilename(result.filename);
+      });
     } catch (err) {
       addToast('error', `Failed to create section: ${err.message}`);
     }
@@ -264,10 +363,11 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
     try {
       await deleteSectionFile(project.id, filename);
       addToast('info', `Deleted: ${filename}`);
-      fetchSections(project.id).then((updated) => {
+      fetchSections(project.id, selectedTemplateName).then((updated) => {
         setSections(updated);
         if (selectedFilename === filename) {
-          setSelectedFilename(null);
+          const next = updated?.[0]?.filename ?? null;
+          setSelectedFilename(next);
           setContent('');
         }
       });
@@ -276,6 +376,47 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       addToast('error', `Delete failed: ${err.message}`);
     }
   }, [project?.id, selectedFilename, addToast]);
+
+  // ─── Template type change ────────────────────────────────────────
+  const handleTemplateTypeChange = useCallback(async (newTemplateName) => {
+    if (!project?.id || newTemplateName === selectedTemplateName) return;
+    setIsLoading(true);
+    try {
+      const syncedSections = await selectProjectTemplateType(project.id, newTemplateName);
+      setSelectedTemplateName(newTemplateName);
+      setSections(syncedSections);
+      setSelectedFilename(syncedSections?.[0]?.filename ?? null);
+      setContent('');
+      addToast('success', `Switched to '${newTemplateName}' template`);
+    } catch (err) {
+      addToast('error', `Failed to switch template: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [project?.id, selectedTemplateName, addToast]);
+
+  // ─── Section lock change (from TemplateDetailsDialog) ────────────
+  const handleSectionLockChange = useCallback((_sectionFilename, _newLockState) => {
+    if (!project?.id) return;
+    Promise.all([
+      fetchTemplateLocks(project.id),
+      fetchSections(project.id, selectedTemplateName),
+    ]).then(([lockData, updatedSections]) => {
+      setTemplateLockStateMap(lockData || {});
+      setSections(updatedSections);
+    }).catch(() => {});
+  }, [project?.id, selectedTemplateName]);
+
+  // ─── Template lock change (from TemplateDetailsDialog) ────────────
+  const handleTemplateLockChange = useCallback((_templateName, _newLockState) => {
+    if (!project?.id) return;
+    fetchTemplateTypeRegistry(project.id).then((registryData) => {
+      setAvailableTemplates(_toTemplateArray(registryData?.templates));
+    }).catch(() => {});
+  }, [project?.id]);
+
+  // ─── Determine if the currently selected section is locked ───────
+  const currentSectionIsLocked = templateLockStateMap?.template_type === selectedTemplateName;
 
   return (
     <div className="h-full w-full flex flex-col bg-[#fafafa]">
@@ -292,19 +433,29 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
           onDelete={handleDeleteSection}
           onAddClick={() => setShowCreateModal(true)}
           loading={isLoading}
+          templateLocked={templateLocked}
+          showTemplateType
+          templateName={selectedTemplateName}
         />
 
         <div className="w-full h-full flex flex-col overflow-hidden">
           {/* Toolbar */}
           <SectionToolbar
             selectedFilename={selectedFilename}
+            selectedTemplateName={selectedTemplateName}
+            availableTemplates={availableTemplates}
             onGenerate={handleGenerate}
             onCancel={handleCancelGeneration}
             onShowJsonViewer={isGenerating ? undefined : handleShowJsonViewer}
             onCreateSection={() => setShowCreateModal(true)}
+            onCreateTemplate={() => setShowCreateTemplateForm(true)}
+            onTemplateChange={handleTemplateTypeChange}
+            onShowTemplateDetails={() => setShowTemplateDialog(true)}
             isGenerating={isGenerating}
             showJsonViewer={showJsonViewer}
+            hasJsonData={phase3Data}
             progress={progress}
+            templateLocked={templateLocked}
           />
 
           {/* Split: Content (left) + JSON Viewer (right) */}
@@ -321,6 +472,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
                 viewMode="editor"
                 onContentChange={debouncedSave}
                 isSaving={isSaving}
+                isSectionLocked={currentSectionIsLocked}
                 selectedChatBlocks={selectedChatBlocks}
                 setSelectedChatBlocks={setSelectedChatBlocks}
               />
@@ -341,8 +493,8 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
                       const delta = startX - moveEvent.clientX;
                       let newWidth = startWidth + delta;
                       
-                      // Constraints: Min 300px, Max 800px (but always leave at least 500px for the editor)
-                      const maxWidth = Math.min(800, window.innerWidth - 500);
+                      // Constraints: Min 300px, Max 600px (but always leave at least 500px for the editor)
+                      const maxWidth = Math.min(600, window.innerWidth - 500);
                       
                       if (newWidth < 300) newWidth = 300;
                       if (newWidth > maxWidth) newWidth = maxWidth;
@@ -382,7 +534,8 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-4 w-[400px] border border-slate-200 shadow-lg">
-            <div className="text-sm font-semibold text-slate-900 mb-3">
+            <div className="text-sm font-semibold text-slate-900 mb-3 flex items-center gap-2">
+              <Plus size={14} className="text-slate-400" />
               New Section Name
             </div>
             <div className="flex items-center gap-2 mb-4">
@@ -424,6 +577,67 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
             </div>
           </div>
         </div>
+      )}
+
+      {/* Create new template modal */}
+      {showCreateTemplateForm && (
+        <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-4 w-[400px] border border-slate-200 shadow-lg">
+            <div className="text-sm font-semibold text-slate-900 mb-3 flex items-center gap-2">
+              <FilePlus size={14} className="text-slate-400" />
+              New Template Name
+            </div>
+            <div className="flex items-center gap-2 mb-4">
+              <input
+                type="text"
+                value={newTemplateName}
+                onChange={(e) => setNewTemplateName(e.target.value)}
+                placeholder="e.g., My Custom Template"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleCreateTemplate();
+                  if (e.key === 'Escape') { setShowCreateTemplateForm(false); setNewTemplateName(''); }
+                }}
+                disabled={isCreatingTemplate}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 font-sans outline-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setShowCreateTemplateForm(false); setNewTemplateName(''); }}
+                className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-500 cursor-pointer hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateTemplate}
+                disabled={!newTemplateName.trim() || isCreatingTemplate}
+                className={`px-4 py-2 rounded-lg border-none text-xs font-semibold cursor-pointer text-white transition-all duration-120 flex items-center gap-1.5 ${
+                  newTemplateName.trim() && !isCreatingTemplate
+                    ? 'bg-primary-600 hover:bg-primary-700'
+                    : 'text-slate-400 bg-slate-100 cursor-default'
+                }`}
+              >
+                {isCreatingTemplate && <Loader2 size={12} className="animate-spin" />}
+                Create Template
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template details / sections dialog */}
+      {showTemplateDialog && (
+        <TemplateDetailsDialog
+          projectId={project?.id}
+          selectedTemplateName={selectedTemplateName}
+          templateLocked={templateLocked}
+          templateOrigin={currentTemplateEntry?.origin}
+          onClose={() => setShowTemplateDialog(false)}
+          onSectionLockChange={handleSectionLockChange}
+          onTemplateLockChange={handleTemplateLockChange}
+        />
       )}
     </div>
   );

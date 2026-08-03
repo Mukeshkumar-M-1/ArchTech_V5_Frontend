@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { FileText, Plus, Loader2, Trash2, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
+import { FileText, Plus, Loader2, Trash2, BookOpen, ChevronLeft, ChevronRight, Lock } from 'lucide-react';
+import usePendingDeleteStore from '../../store/pendingDeleteStore';
 
 /**
  * SectionList - Renders the left-panel file list for template sections.
@@ -13,9 +14,23 @@ import { FileText, Plus, Loader2, Trash2, BookOpen, ChevronLeft, ChevronRight } 
  * @param {(filename: string) => void} props.onDelete
  * @param {() => void} props.onAddClick
  * @param {boolean} props.loading
+ * @param {boolean} [props.templateLocked] - Whether the template type is locked.
+ * @param {boolean} [props.showTemplateType] - Whether to show the template type badge.
+ * @param {string} [props.templateName] - The name of the currently selected template.
  */
-export default function SectionList({ sections, selectedFilename, onSelect, onDelete, onAddClick, loading }) {
+export default function SectionList({
+  sections,
+  selectedFilename,
+  onSelect,
+  onDelete,
+  onAddClick,
+  loading,
+  templateLocked,
+  showTemplateType,
+  templateName = 'Standard',
+}) {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const pendingDelete = usePendingDeleteStore();
 
   if (loading) {
     return (
@@ -59,73 +74,85 @@ export default function SectionList({ sections, selectedFilename, onSelect, onDe
             )}
           </div>
         ) : (
-          sections.map((s) => (
-            <div
-              key={s.filename}
-              className={`group flex items-center cursor-pointer transition-all duration-300 ${
-                isCollapsed 
-                  ? 'justify-center mb-3 w-10 h-10' 
-                  : `justify-between px-3 py-2.5 rounded-xl mb-2 border ${
-                      selectedFilename === s.filename
-                        ? 'bg-white shadow-md shadow-slate-200/50 border-slate-200 scale-[1.02] z-10'
-                        : 'bg-transparent border-transparent hover:bg-white/60 hover:shadow-sm'
-                    }`
-              }`}
-              onClick={() => onSelect(s.filename)}
-              title={isCollapsed ? s.title : undefined}
-            >
-              <div className={`flex items-center overflow-hidden flex-1 min-w-0 ${isCollapsed ? 'justify-center gap-0' : 'gap-2.5'}`}>
-                <div className={`flex items-center justify-center transition-all duration-300 shrink-0 ${
-                  isCollapsed 
-                    ? 'w-8 h-8 rounded-xl border m-2' 
-                    : 'w-7 h-7 rounded-[10px] shadow-sm border border-slate-200/60'
-                } ${
-                  selectedFilename === s.filename 
-                    ? (isCollapsed 
-                        ? 'bg-gradient-to-br from-primary-500 to-primary-600 border-primary-500 shadow-lg shadow-primary-500/30 scale-100 z-20' 
-                        : 'bg-primary-600')
-                    : (isCollapsed 
-                        ? 'bg-white border-slate-200 hover:border-primary-300 hover:shadow-md hover:scale-105' 
-                        : 'bg-slate-100 group-hover:bg-primary-50')
-                }`}>
-                  {isCollapsed ? (
-                    <span className={`text-[13px] font-black tracking-widest ${selectedFilename === s.filename ? 'text-white drop-shadow-md' : 'text-slate-500 group-hover:text-primary-600'}`}>
-                      {String(s.section_number).padStart(2, '0')}
-                    </span>
-                  ) : (
-                    <FileText size={13} className={selectedFilename === s.filename ? 'text-white' : 'text-slate-400 group-hover:text-primary-500'} />
+          sections.map((sectionItem) => {
+            const isSelected = selectedFilename === sectionItem.filename;
+            return (
+              <div
+                key={sectionItem.filename}
+                className={`group flex items-center cursor-pointer transition-all duration-300 ${
+                  isCollapsed
+                    ? 'justify-center mb-3 w-10 h-10'
+                    : `justify-between px-3 py-2.5 rounded-xl mb-2 border ${
+                        isSelected
+                          ? 'bg-white shadow-md shadow-slate-200/50 border-slate-200 scale-[1.02] z-10'
+                          : 'bg-transparent border-transparent hover:bg-white/60 hover:shadow-sm'
+                      }`
+                }`}
+                onClick={() => onSelect(sectionItem.filename)}
+                title={isCollapsed ? sectionItem.title : undefined}
+              >
+                <div className={`flex items-center overflow-hidden flex-1 min-w-0 ${isCollapsed ? 'justify-center gap-0' : 'gap-2.5'}`}>
+                  <div className={`flex items-center justify-center transition-all duration-300 shrink-0 ${
+                    isCollapsed
+                      ? 'w-8 h-8 rounded-xl border m-2'
+                      : 'w-7 h-7 rounded-[10px] shadow-sm border border-slate-200/60'
+                  } ${
+                    isSelected
+                      ? (isCollapsed
+                          ? 'bg-gradient-to-br from-primary-500 to-primary-600 border-primary-500 shadow-lg shadow-primary-500/30 scale-100 z-20'
+                          : 'bg-primary-600')
+                      : (isCollapsed
+                          ? 'bg-white border-slate-200 hover:border-primary-300 hover:shadow-md hover:scale-105'
+                          : 'bg-slate-100 group-hover:bg-primary-50')
+                  }`}>
+                    {isCollapsed ? (
+                      <span className={`text-[13px] font-black tracking-widest ${isSelected ? 'text-white drop-shadow-md' : 'text-slate-500 group-hover:text-primary-600'}`}>
+                        {String(sectionItem.section_number).padStart(2, '0')}
+                      </span>
+                    ) : (
+                      <FileText size={13} className={isSelected ? 'text-white' : 'text-slate-400 group-hover:text-primary-500'} />
+                    )}
+                  </div>
+                  {!isCollapsed && (
+                    <div className="flex flex-col overflow-hidden min-w-0 flex-1">
+                      {showTemplateType && (
+                        <span className="text-[9px] text-slate-400 font-medium">
+                          {templateName}
+                        </span>
+                      )}
+                      <span className={`text-[9px] font-black uppercase tracking-widest mb-0.5 transition-colors ${
+                         isSelected ? 'text-primary-500' : 'text-slate-400'
+                      }`}>
+                        Section {String(sectionItem.section_number).padStart(2, '0')}
+                      </span>
+                      <span className={`text-xs font-bold overflow-hidden text-ellipsis whitespace-nowrap transition-colors ${
+                        isSelected ? 'text-slate-900' : 'text-slate-600 group-hover:text-slate-800'
+                      }`}>
+                        {sectionItem.title}
+                      </span>
+                    </div>
                   )}
                 </div>
-                {!isCollapsed && (
-                  <div className="flex flex-col overflow-hidden min-w-0 flex-1">
-                    <span className={`text-[9px] font-black uppercase tracking-widest mb-0.5 transition-colors ${
-                       selectedFilename === s.filename ? 'text-primary-500' : 'text-slate-400'
-                    }`}>
-                      Section {String(s.section_number).padStart(2, '0')}
-                    </span>
-                    <span className={`text-xs font-bold overflow-hidden text-ellipsis whitespace-nowrap transition-colors ${
-                      selectedFilename === s.filename ? 'text-slate-900' : 'text-slate-600 group-hover:text-slate-800'
-                    }`}>
-                      {s.title}
-                    </span>
-                  </div>
+                {!isCollapsed && sections.length > 1 && (
+                  <span className="flex items-center gap-1 shrink-0 ml-2">
+                    {templateLocked && (
+                      <Lock size={12} className="text-slate-300 shrink-0" title="Template is locked" />
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); pendingDelete.setPending(sectionItem.filename, onDelete); }}
+                      className="border-none bg-white shadow-sm cursor-pointer p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100 hover:scale-110"
+                      title="Delete section"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </span>
                 )}
               </div>
-              {!isCollapsed && sections.length > 1 && (
-                <span className="flex items-center gap-1 shrink-0 ml-2">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onDelete(s.filename); }}
-                    className="border-none bg-white shadow-sm cursor-pointer p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100 hover:scale-110"
-                    title="Delete section"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </span>
-              )}
-            </div>
-          ))
+            );
+          })
         )}
       </div>
+
     </div>
   );
 }

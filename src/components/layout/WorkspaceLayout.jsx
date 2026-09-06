@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { NavLink, Outlet, useParams } from 'react-router-dom';
 import useBuildCompleteStore from '../../store/buildCompleteStore';
 import usePendingDeleteStore from '../../store/pendingDeleteStore';
+import SettingsDialog from '../settings/SettingsDialog';
 import {
   BarChart3,
   Cpu,
@@ -35,6 +36,9 @@ export default function WorkspaceLayout({ project }) {
 
   // Sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // Settings dialog state
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const workspaceNames = {
     requirements: 'Requirements Dashboard',
@@ -138,21 +142,18 @@ export default function WorkspaceLayout({ project }) {
               <div className="font-bold text-sm text-slate-900 truncate relative z-10">{project?.name || 'Gateway Node B'}</div>
               <div className="text-xs font-mono text-primary-500 mt-1 relative z-10">{project?.id || 'ARCH-2026-X1'}</div>
             </div>
-          ) : (
-            <div className="w-10 h-10 mx-auto bg-slate-50 rounded-full border border-slate-200 flex items-center justify-center text-slate-900 font-bold shadow-sm mb-6 shrink-0" title="Gateway Node B">
-              GB
-            </div>
-          )}
+          ) : null}
           
           <div className={`flex items-center gap-3 ${isSidebarOpen ? '' : 'flex-col'}`}>
-            <button 
+            {/* <button 
               className={`flex items-center justify-center gap-2 py-3 bg-primary-500 text-white rounded-xl text-xs font-bold hover:bg-primary-400 transition-all duration-300 shadow-[0_0_15px_rgba(59,130,246,0.3)] hover:shadow-[0_0_25px_rgba(59,130,246,0.5)] ${isSidebarOpen ? 'flex-1 px-4' : 'w-10 h-10 p-0 rounded-full'}`}
               title={!isSidebarOpen ? 'Sign Out' : undefined}
             >
               <LogOut size={isSidebarOpen ? 14 : 16} />
               {isSidebarOpen && <span className="whitespace-nowrap">Sign Out</span>}
-            </button>
-            <button 
+            </button> */}
+            <button
+              onClick={() => setIsSettingsOpen(true)}
               className={`p-3 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-slate-900 hover:border-slate-300 hover:bg-slate-50 transition-all duration-300 shadow-sm shrink-0 ${isSidebarOpen ? '' : 'w-10 h-10 rounded-full flex items-center justify-center p-0'}`}
               title={!isSidebarOpen ? 'Settings' : undefined}
             >
@@ -191,7 +192,7 @@ export default function WorkspaceLayout({ project }) {
 
         {/* Build Complete Dialog */}
         {buildComplete.activeTab && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20">
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -235,7 +236,7 @@ export default function WorkspaceLayout({ project }) {
 
         {/* Delete Confirmation Dialog */}
         {pendingDelete.filename && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20">
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -273,6 +274,11 @@ export default function WorkspaceLayout({ project }) {
               </div>
             </motion.div>
           </div>
+        )}
+
+        {/* Settings Dialog */}
+        {isSettingsOpen && (
+          <SettingsDialog project={project} onClose={() => setIsSettingsOpen(false)} />
         )}
       </main>
     </div>

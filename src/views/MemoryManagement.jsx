@@ -455,7 +455,7 @@ export default function MemoryManagement({ project }) {
 
   return (
     <div
-      className="flex h-[860px] min-h-0 gap-0 overflow-hidden rounded-2xl border border-slate-200 shadow-[0_4px_24px_rgba(0,0,0,0.06)]"
+      className="flex h-screen min-h-0 gap-0 overflow-hidden rounded-2xl border border-slate-200 shadow-[0_4px_24px_rgba(0,0,0,0.06)]"
     >
       {/* ── File Tree Panel ─────────────────────────────────────────────── */}
       <div className="w-[280px] flex-shrink-0 flex flex-col border-r border-white/40 bg-white/40 backdrop-blur-xl z-10 shadow-[inset_-1px_0_0_rgba(255,255,255,0.3)]">

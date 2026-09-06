@@ -12,7 +12,6 @@ import EditorPanel from "./SoftwareWorkspace/EditorPanel";
 import ChatPanel from "./SoftwareWorkspace/ChatPanel";
 import useBuildCompleteStore from "../store/buildCompleteStore";
 
-
 /**
  * SoftwareWorkspace - Main workspace component for managing SRS/SDD documents.
  * Orchestrates the chat, document generation, and editor panels.
@@ -52,7 +51,8 @@ export default function SoftwareWorkspace({ project: activeProject }) {
 
   // Auto-navigate to document generation tab when build completes
   const buildCompleteTab = useBuildCompleteStore((s) => s.activeTab);
-  const [prevBuildCompleteTab, setPrevBuildCompleteTab] = useState(buildCompleteTab);
+  const [prevBuildCompleteTab, setPrevBuildCompleteTab] =
+    useState(buildCompleteTab);
 
   if (buildCompleteTab !== prevBuildCompleteTab) {
     setPrevBuildCompleteTab(buildCompleteTab);
@@ -65,7 +65,16 @@ export default function SoftwareWorkspace({ project: activeProject }) {
   useEffect(() => {
     const projectId = activeProject?.id || activeProject?._id;
     if (projectId) {
-      fetch(`${getApiUrl("/init-project")}?project_id=${projectId}`).catch(
+      fetch(getApiUrl("/init-project"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          project_id: projectId,
+          name: activeProject?.name || projectId
+        })
+      }).catch(
         () => {},
       ); // best-effort, don't block
     }
@@ -193,7 +202,7 @@ export default function SoftwareWorkspace({ project: activeProject }) {
         ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
       `}</style>
 
-      <div className="flex h-[860px] gap-0 bg-gray-50 font-sans overflow-hidden rounded-2xl border border-gray-200 shadow-[0_4px_24px_rgba(0,0,0,0.06)]">
+      <div className="flex h-screen gap-0 bg-gray-50 font-sans overflow-hidden rounded-2xl border border-gray-200 shadow-[0_4px_24px_rgba(0,0,0,0.06)]">
         {/* ── Main Content ── */}
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
           {/* Topbar */}
@@ -228,6 +237,13 @@ export default function SoftwareWorkspace({ project: activeProject }) {
               setSelectedChatBlocks={setSelectedChatBlocks}
               focusedChatBlock={focusedChatBlock}
               setFocusedChatBlock={setFocusedChatBlock}
+              chatMessages={chatMessages}
+              onInteractionSubmit={handleInteractionSubmit}
+              currentSessionId={currentSessionId}
+              isAwaitingUserInput={isAwaitingUserInput}
+              onAwaitingUserInputChange={setIsAwaitingUserInput}
+              pendingToolCallId={pendingToolCallId}
+              setPendingToolCallId={setPendingToolCallId}
             />
 
             {/* Chat Panel Resizer */}
@@ -280,6 +296,19 @@ export default function SoftwareWorkspace({ project: activeProject }) {
                 onInteractionSubmit={handleInteractionSubmit}
                 currentSessionId={currentSessionId}
                 isAwaitingUserInput={isAwaitingUserInput}
+                project={activeProject}
+                onClearConversation={() => {
+                  setChatMessages([
+                    {
+                      role: "bot",
+                      content:
+                        "Hi! I'm your AI assistant. Ask me anything about your project, requirements, or SRS document.",
+                    },
+                  ]);
+                  setChatInput("");
+                  setSelectedChatBlocks([]);
+                  setIsAwaitingUserInput(false);
+                }}
                 onAwaitingUserInputChange={setIsAwaitingUserInput}
                 pendingToolCallId={pendingToolCallId}
                 setPendingToolCallId={setPendingToolCallId}

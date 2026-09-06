@@ -1,5 +1,4 @@
-import { sendChatMessage } from "../api/chatApi";
-import { getApiUrl } from "../utils/apiConfig";
+import { sendChatMessage, sendChatInteraction } from "../api/chatApi";
 
 export const handleChatSend = async ({
   chatInput,
@@ -22,7 +21,7 @@ export const handleChatSend = async ({
   const sessionId = activeProject?.id || null;
   const userMsg = chatInput.trim();
   setChatInput("");
-  const contextBlocksToPass = selectedChatBlocks.length > 0 ? selectedChatBlocks : undefined;
+  const contextBlocksToPass = selectedChatBlocks.length > 0 ? selectedChatBlocks : null;
   if (selectedChatBlocks.length > 0) {
     setSelectedChatBlocks([]);
   }
@@ -46,8 +45,6 @@ export const handleChatSend = async ({
       signal: abortController.signal,
       contextBlocks: contextBlocksToPass,
     });
-    console.log("Stream", stream);
-
     for await (const event of stream) {
       console.log("[ChatSSE] event:", event.type, event.tool_call_id || "");
       const { type, content } = event;
@@ -181,16 +178,7 @@ export const handleInteractionSubmit = async ({
   setChatMessages,
 }) => {
   try {
-    const res = await fetch(getApiUrl("/chat/interact"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id,
-        tool_call_id,
-        response,
-      }),
-    });
-    const data = await res.json();
+    const data = await sendChatInteraction({ session_id, tool_call_id, response });
     if (data?.status === "resumed") {
       setChatMessages((prevMessages) =>
         prevMessages.map((msg) =>

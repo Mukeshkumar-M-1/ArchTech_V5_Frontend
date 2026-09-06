@@ -21,11 +21,19 @@ import VersionPanel from './VersionPanel';
  * @param {Function} props.setSelectedChatBlocks
  * @param {Object} props.focusedChatBlock
  * @param {Function} props.setFocusedChatBlock
+ * @param {Array} props.chatMessages - Chat messages with content_edit tool messages
+ * @param {Function} props.onInteractionSubmit - Submit interaction responses
+ * @param {string} props.currentSessionId - Current chat session ID
+ * @param {boolean} props.isAwaitingUserInput - Whether awaiting user input
+ * @param {Function} props.onAwaitingUserInputChange - Toggle awaiting input state
+ * @param {string} props.pendingToolCallId - Pending tool call ID
+ * @param {Function} props.setPendingToolCallId - Set pending tool call ID
  */
 export default function EditorPanel({
   activeMainTab, subTab, onSubTabChange,
   isFullscreen, onFullscreenToggle, onGenerate, isGenActive, srsDoc, setSrsDoc, onCancel, onGenerationComplete,
-  project, selectedChatBlocks, setSelectedChatBlocks, focusedChatBlock, setFocusedChatBlock
+  project, selectedChatBlocks, setSelectedChatBlocks, focusedChatBlock, setFocusedChatBlock,
+  chatMessages, onInteractionSubmit, currentSessionId, isAwaitingUserInput, onAwaitingUserInputChange, pendingToolCallId, setPendingToolCallId
 }) {
   const isSdd = activeMainTab === 'sdd';
 
@@ -84,6 +92,13 @@ export default function EditorPanel({
               setSelectedChatBlocks={setSelectedChatBlocks}
               focusedChatBlock={focusedChatBlock}
               setFocusedChatBlock={setFocusedChatBlock}
+              chatMessages={chatMessages}
+              onInteractionSubmit={onInteractionSubmit}
+              currentSessionId={currentSessionId}
+              isAwaitingUserInput={isAwaitingUserInput}
+              onAwaitingUserInputChange={onAwaitingUserInputChange}
+              pendingToolCallId={pendingToolCallId}
+              setPendingToolCallId={setPendingToolCallId}
             />
           )}
         </div>

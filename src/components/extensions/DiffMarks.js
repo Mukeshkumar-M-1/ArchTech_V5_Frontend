@@ -1,33 +1,42 @@
-import { Mark, mergeAttributes } from '@tiptap/core';
+import { Node, mergeAttributes } from '@tiptap/core';
 
-export const DiffAdd = Mark.create({
+export const DiffAdd = Node.create({
   name: 'diffAdd',
+  group: 'block',    // Acts as a block container
+  content: 'block+', // Can hold paragraphs, tables, blockquotes, etc.
 
   parseHTML() {
-    return [
-      {
-        tag: 'ins',
-      },
-    ];
+    return [{ tag: 'add_content' }];
   },
 
   renderHTML({ HTMLAttributes }) {
-    return ['ins', mergeAttributes(HTMLAttributes, { class: 'bg-emerald-100 text-emerald-800 decoration-emerald-500 rounded px-1' }), 0];
+    return [
+      'add_content',
+      mergeAttributes(HTMLAttributes, {
+        // Entire table/block gets ONE border and background
+        class: 'block bg-emerald-50/60 border-l-4 border-emerald-500 text-emerald-950 p-4 my-4 rounded-r-md overflow-x-auto',
+      }),
+      0, // Holds the child block elements (e.g., the <table>)
+    ];
   },
 });
 
-export const DiffDelete = Mark.create({
+export const DiffDelete = Node.create({
   name: 'diffDelete',
+  group: 'block',
+  content: 'block+',
 
   parseHTML() {
-    return [
-      {
-        tag: 'del',
-      },
-    ];
+    return [{ tag: 'delete_content' }];
   },
 
   renderHTML({ HTMLAttributes }) {
-    return ['del', mergeAttributes(HTMLAttributes, { class: 'bg-rose-100 text-rose-800 line-through rounded px-1' }), 0];
+    return [
+      'delete_content',
+      mergeAttributes(HTMLAttributes, {
+        class: 'block bg-red-50/60 border-l-4 border-red-500 text-red-950 p-4 my-4 rounded-r-md opacity-85 overflow-x-auto',
+      }),
+      0,
+    ];
   },
 });

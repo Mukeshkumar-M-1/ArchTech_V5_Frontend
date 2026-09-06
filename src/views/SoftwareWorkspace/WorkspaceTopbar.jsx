@@ -1,4 +1,5 @@
 import { Bot, BookOpen, ShieldCheck, FileText, Zap } from 'lucide-react';
+import SaveStatusIndicator from '../../components/SaveStatusIndicator';
 
 function TabPill({ label, icon, active, onClick, badge }) {
   return (
@@ -42,7 +43,8 @@ export default function WorkspaceTopbar({
       </div>
 
       {/* Right controls */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-6">
+        <SaveStatusIndicator />
         <button
           onClick={onChatToggle}
           className={`flex items-center gap-2 px-5 py-2.5 rounded-[14px] cursor-pointer text-[10px] font-black uppercase tracking-widest transition-all duration-300 border ${

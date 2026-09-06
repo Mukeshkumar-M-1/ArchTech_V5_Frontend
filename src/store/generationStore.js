@@ -20,6 +20,7 @@ const useGenerationStore = create((set, get) => ({
   }),
   setPhase: (phase) => set({ phase }),
   setSectionProgress: (current, total) => set({ sectionCurrent: current, sectionTotal: total }),
+  setSectionCurrent: (section_current) => set({sectionCurrent: section_current}),
   setExecutionLog: (val) => set((state) => {
     const next = typeof val === 'function' ? val(state.executionLog) : val;
     return { executionLog: next };

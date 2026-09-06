@@ -154,7 +154,7 @@ export default function VersionPanel({ project }) {
   return (
     <div className="flex flex-1 overflow-hidden h-full">
       {/* ─── Left: Version List ─── */}
-      <div className="w-52 flex-shrink-0 bg-[#fafbfc] border-r border-[#e5e7eb] flex flex-col overflow-hidden">
+      <div className="w-64 flex-shrink-0 bg-[#fafbfc] border-r border-[#e5e7eb] flex flex-col overflow-hidden">
         <div className="px-3 py-2.5 border-b border-[#e5e7eb] flex items-center gap-2">
           <GitCommit size={14} className="text-[#64748b]" />
           <span className="text-[11px] font-bold uppercase tracking-wider text-[#475569]">

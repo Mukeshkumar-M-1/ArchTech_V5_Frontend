@@ -30,6 +30,7 @@ import React, {
   useRef,
 } from "react";
 import debounce from "lodash.debounce";
+import { getApiUrl } from "../utils/apiConfig";
 import { Markdown } from "tiptap-markdown";
 import { marked } from "marked";
 import {
@@ -75,6 +76,7 @@ import {
   BetweenVerticalEnd,
   BetweenHorizontalStart,
   BetweenHorizontalEnd,
+  MessageSquare,
 } from "lucide-react";
 
 import Highlight from "@tiptap/extension-highlight";
@@ -91,11 +93,15 @@ import { Decoration, DecorationSet } from "prosemirror-view";
 import { CellSelection } from "@tiptap/pm/tables";
 
 import { DiffAdd, DiffDelete } from "./extensions/DiffMarks";
+import { useDocumentStore } from "../stores/useDocumentStore";
 
 const normalizeText = (str) => (str || "").replace(/\s+/g, " ").trim();
 
 // ─── ChatSelectionPlugin ────────────────────────────────────────────────────────
 const chatSelectionKey = new PluginKey("chatSelection");
+
+// Shared state: currently focused block number for highlight data attribute
+let focusedChatBlockNumber = null;
 
 function getChatSelectionPlugin() {
   return new Plugin({
@@ -137,12 +143,20 @@ function getChatSelectionPlugin() {
                 Decoration.node(pos, pos + node.nodeSize, {
                   class: "is-chat-selected",
                   "data-chat-block-number": String(blockNumber),
+                  "data-is-focused": String(
+                    focusedChatBlockNumber === blockNumber ? "true" : "false",
+                  ),
+                  style: "display: block; position: relative; margin-left: -11px;",
                 }),
               );
               return false; // do not descend into child nodes to prevent overlapping decorations
             }
           }
         });
+        console.log(
+          "[TiptapEditor] Total decorations created:",
+          decorations.length,
+        );
         return DecorationSet.create(state.doc, decorations);
       },
     },
@@ -675,16 +689,63 @@ export default function TiptapEditor({
   focusedChatBlock,
   setFocusedChatBlock,
   enableChatContext = false,
+  useDocumentSync = false,
+  documentId = null,
 }) {
+  const { markUnsaved, queueSave } = useDocumentStore();
+  const currentVersionRef = useRef(versionNumber || 1);
+
+  // Only update from props if the incoming version is higher (prevents stale props from overriding after a save)
+  useEffect(() => {
+    if (versionNumber && versionNumber > currentVersionRef.current) {
+      currentVersionRef.current = versionNumber;
+    }
+  }, [versionNumber]);
+
+  // Hard reset when switching documents
+  useEffect(() => {
+    currentVersionRef.current = versionNumber || 1;
+  }, [documentId]);
+
   const debouncedOnChange = useMemo(
-    () => debounce((val) => onChange(val), 300),
-    [onChange],
+    () => debounce((val) => {
+      onChange?.(val);
+      if (useDocumentSync && documentId) {
+        queueSave(async () => {
+           const projectId = project?.id || project?._id;
+           const res = await fetch(getApiUrl(`/api/documents/${documentId}`), {
+               method: 'PATCH',
+               headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify({ 
+                   content: val, 
+                   base_version: currentVersionRef.current,
+                   project_id: projectId,
+                   title: documentId
+               })
+           });
+           if (!res.ok) {
+               if (res.status === 409) {
+                   const errorData = await res.json();
+                   throw { response: { status: 409, data: errorData.detail } };
+               }
+               throw new Error('Failed to save document');
+           }
+           const data = await res.json();
+           if (data.version) {
+               currentVersionRef.current = data.version;
+           }
+           return { version: data.version, updated_at: data.updated_at };
+        });
+      }
+    }, 1000),
+    [onChange, useDocumentSync, documentId, queueSave, versionNumber],
   );
 
   useEffect(() => {
     return () => debouncedOnChange.cancel();
-  }, []);
+  }, [debouncedOnChange]);
 
+  const [isCopied, setIsCopied] = useState(false);
   const containerRef = useRef(null);
 
   const [focusMode, setFocusMode] = useState(false);
@@ -826,14 +887,16 @@ export default function TiptapEditor({
       DiffDelete,
     ],
     // Content Updation (Markdown to HTML)
-    content: marked.parse(content || ""),
-    // Content Updation (HTML to Markdown)
+    content: typeof content === 'string' ? marked.parse(content || "") : content,
+    // Content Updation
     onUpdate: ({ editor }) => {
-      debouncedOnChange(editor.storage.markdown.getMarkdown());
-      // console.log(
-      //   "Markdown Rendering : ",
-      //   editor.storage.markdown.getMarkdown(),
-      // );
+      if (useDocumentSync && documentId) {
+         const jsonContent = editor.getJSON();
+         markUnsaved(jsonContent);
+         debouncedOnChange(jsonContent);
+      } else {
+         debouncedOnChange(editor.storage.markdown.getMarkdown());
+      }
     },
     // Custom Editing Props
     editorProps: {
@@ -844,85 +907,143 @@ export default function TiptapEditor({
           "prose-td:border prose-td:border-slate-300 prose-td:p-2 " +
           "prose-th:border prose-th:border-slate-300 prose-th:bg-slate-100 prose-th:p-2 " +
           "prose-blockquote:border-l-4 prose-blockquote:border-slate-300 prose-blockquote:bg-slate-50 prose-blockquote:pl-4 prose-blockquote:py-3 prose-blockquote:rounded-r-md prose-blockquote:italic prose-blockquote:text-slate-600 " +
-          "[&_.selectedCell]:bg-primary-50/80",
+          "[&_.selectedCell]:bg-primary-50/80" +
+          "[&_add_content_table]:border-emerald-300 [&_add_content_th]:bg-emerald-100/50 " +
+          "[&_delete_content_table]:border-red-300 [&_delete_content_th]:bg-red-100/50",
       },
     },
   });
 
   // Listen for agent-based content edits
   useEffect(() => {
-    const getFlexibleRegex = (text) => {
-      if (!text) return null;
-      // Escape regex chars but leave spaces and hyphens
-      let escaped = text.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Replace any sequence of whitespace or hyphens with a permissive matcher
-      let regexStr = escaped.replace(/[\s\\-]+/g, '[\\s\\-]+');
-      try {
-        return new RegExp(regexStr);
-      } catch (e) {
-        return null;
-      }
-    };
+    const findBestMatchInMarkdown = (searchText, fullDocumentMarkdown) => {
+      const exactText = searchText.trim();
+      if (!exactText || !fullDocumentMarkdown) return null;
 
-    const findBestMatch = (text, markdown) => {
-      const cleanText = text.trim();
-      if (!cleanText) return null;
-      if (markdown.includes(cleanText)) return cleanText;
+      // 1. Direct match check
+      if (fullDocumentMarkdown.includes(exactText)) return exactText;
 
-      const regex = getFlexibleRegex(cleanText);
-      if (regex) {
-        const match = markdown.match(regex);
-        if (match) return match[0];
-      }
+      // Tokenize Markdown into distinct structural & text tokens with exact offsets
+      const tokenizeMarkdown = (text) => {
+        const tokens = [];
+        // Captures words, numbers, or specific markdown symbols (| * - # ` [ ] ( ))
+        const tokenRegex = /[a-zA-Z0-9]+|\||\*+|-+|#+|`+|\[|\]|\(|\)/g;
+        let match;
 
-      // Fallback: Prefix/Suffix matching for long texts
-      if (cleanText.length > 40) {
-        const prefixStr = cleanText.substring(0, 20).trim();
-        const suffixStr = cleanText.substring(cleanText.length - 20).trim();
+        while ((match = tokenRegex.exec(text)) !== null) {
+          tokens.push({
+            value: match[0].toLowerCase(),
+            start: match.index,
+            end: match.index + match[0].length,
+          });
+        }
+        return tokens;
+      };
 
-        const prefix = prefixStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s\\-]+/g, '[\\s\\S]{1,10}');
-        const suffix = suffixStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s\\-]+/g, '[\\s\\S]{1,10}');
-        
-        try {
-          const prefixRegex = new RegExp(prefix);
-          const suffixRegex = new RegExp(suffix);
+      const searchTokens = tokenizeMarkdown(exactText);
+      const docTokens = tokenizeMarkdown(fullDocumentMarkdown);
 
-          const pMatch = markdown.match(prefixRegex);
-          if (pMatch) {
-            const startIndex = pMatch.index;
-            const afterPrefix = markdown.substring(startIndex);
-            const sMatch = afterPrefix.match(suffixRegex);
-            if (sMatch) {
-              const endIndex = startIndex + sMatch.index + sMatch[0].length;
-              // Ensure the match isn't absurdly long (e.g., matching across the entire document)
-              const matchedStr = markdown.substring(startIndex, endIndex);
-              if (matchedStr.length < cleanText.length * 2) {
-                return matchedStr;
-              }
-            }
+      if (searchTokens.length === 0 || docTokens.length === 0) return null;
+
+      // 2. Sliding Window Sequence Match
+      const windowSize = searchTokens.length;
+      let startCharIndex = -1;
+      let endCharIndex = -1;
+
+      for (let i = 0; i <= docTokens.length - windowSize; i++) {
+        let isMatch = true;
+
+        for (let j = 0; j < windowSize; j++) {
+          if (docTokens[i + j].value !== searchTokens[j].value) {
+            isMatch = false;
+            break;
           }
-        } catch (e) {
-          // ignore regex errors
+        }
+
+        if (isMatch) {
+          startCharIndex = docTokens[i].start;
+          endCharIndex = docTokens[i + windowSize - 1].end;
+          break;
         }
       }
+
+      // 3. Expand to full multi-line boundaries (e.g., table rows)
+      if (startCharIndex !== -1 && endCharIndex !== -1) {
+        let lineStart = fullDocumentMarkdown.lastIndexOf('\n', startCharIndex - 1) + 1;
+        if (lineStart < 0) lineStart = 0;
+
+        let lineEnd = fullDocumentMarkdown.indexOf('\n', endCharIndex);
+        if (lineEnd === -1) lineEnd = fullDocumentMarkdown.length;
+
+        return fullDocumentMarkdown.substring(lineStart, lineEnd).trim();
+      }
+
       return null;
     };
 
     const handlePreviewContentEdit = (e) => {
       if (!editor) return;
       const { original_text, proposed_text } = e.detail;
+      console.log("Original : ", original_text, "\n Proposed : ", proposed_text);
+
       if (original_text && proposed_text) {
         const currentMarkdown = editor.storage.markdown.getMarkdown();
-        const matchedText = findBestMatch(original_text, currentMarkdown);
-        if (matchedText) {
-          if (!currentMarkdown.includes(`<del>${matchedText}</del>`)) {
-            window.__archtech_preview_original = currentMarkdown;
-            const previewHtml = `<del>${matchedText}</del> <ins>${proposed_text}</ins>`;
-            const newMarkdown = currentMarkdown.replace(matchedText, previewHtml);
-            editor.commands.setContent(marked.parse(newMarkdown), true);
+        window.__archtech_preview_original = currentMarkdown;
+
+        // 1. Try markdown-based match
+        const matchedMarkdownSegment = findBestMatchInMarkdown(original_text, currentMarkdown);
+
+        console.log("Matched Markdown : ", matchedMarkdownSegment);
+        if (matchedMarkdownSegment) {
+          // DO NOT strip the table separators. 
+          // Instead, parse the original and proposed markdown into full HTML first.
+          // This ensures `marked` successfully converts |---| into a real <table>.
+          const matchedHtml = marked.parse(matchedMarkdownSegment, { gfm: true, breaks: true });
+          const proposedHtml = marked.parse(proposed_text, { gfm: true, breaks: true });
+
+          // Wrap the fully rendered HTML tables in your diff tags.
+          // Note: Added \n so the parser treats these as block-level elements.
+          const diffPreviewHtml = `\n<delete_content>\n${matchedHtml}\n</delete_content>\n<add_content>\n${proposedHtml}\n</add_content>\n`;
+          
+          // Replace the markdown segment with the HTML diff block
+          const previewMarkdown = currentMarkdown.replace(matchedMarkdownSegment, diffPreviewHtml);
+          
+          console.log("Preview Markdown : ", previewMarkdown);
+          
+          // Set the editor content
+          editor.commands.setContent(marked.parse(previewMarkdown, { gfm: true, breaks: true }), true);
+          return;
+        }
+
+        // 2. DOM-based fallback: find matching block, apply diff marks
+        const normalizedOriginalText = typeof normalizeText === 'function' ? normalizeText(original_text) : original_text.trim();
+        let matchedBlockPosition = null;
+        let matchedBlockNode = null;
+        editor.state.doc.descendants((node, pos) => {
+          const nodeText = typeof normalizeText === 'function' ? normalizeText(node.textContent) : node.textContent.trim();
+          if (node.isBlock && nodeText === normalizedOriginalText) {
+            matchedBlockPosition = pos;
+            matchedBlockNode = node;
           }
+        });
+
+        if (matchedBlockPosition !== null) {
+          const blockPosition = editor.state.doc.resolve(matchedBlockPosition);
+          const blockDepth = Math.max(blockPosition.depth, 1);
+          const blockStart = blockPosition.before(blockDepth);
+          const blockEnd = blockStart + matchedBlockNode.nodeSize;
+
+          // Apply diffDelete mark to old content
+          const applyDeleteMark = editor.state.tr;
+          applyDeleteMark.addMark(blockStart + 1, blockEnd - 1, editor.state.schema.marks.diffDelete.create());
+          editor.view.dispatch(applyDeleteMark);
+
+          // Parse proposed markdown as HTML, wrap in <add_content> for diffAdd styling
+          const proposedContentHtml = marked.parse(proposed_text, { gfm: true, breaks: true });
+          const diffAddedHtml = `<add_content>${proposedContentHtml}</add_content>`;
+          editor.commands.insertContentAt(blockEnd, diffAddedHtml);
         } else {
-          console.warn("Could not find fuzzy text in editor to preview.", original_text);
+          console.warn("Could not find block in editor for original_text:", original_text);
         }
       }
     };
@@ -932,10 +1053,31 @@ export default function TiptapEditor({
       const { original_text, proposed_text } = e.detail;
       if (original_text && proposed_text) {
         const baseMarkdown = window.__archtech_preview_original || editor.storage.markdown.getMarkdown();
-        const matchedText = findBestMatch(original_text, baseMarkdown);
-        if (matchedText) {
-          const newMarkdown = baseMarkdown.replace(matchedText, proposed_text);
-          editor.commands.setContent(marked.parse(newMarkdown), true);
+        const matchedMarkdownSegment = findBestMatchInMarkdown(original_text, baseMarkdown);
+        if (matchedMarkdownSegment) {
+          const updatedMarkdown = baseMarkdown.replace(matchedMarkdownSegment, proposed_text);
+          editor.commands.setContent(marked.parse(updatedMarkdown), true);
+        } else {
+          // Fallback: match by plain text, replace block content preserving structure
+          const normalizedOriginalText = normalizeText(original_text);
+          let matchedBlockPosition = null;
+          editor.state.doc.descendants((node, pos) => {
+            if (node.isBlock && normalizeText(node.textContent) === normalizedOriginalText) {
+              matchedBlockPosition = pos;
+            }
+          });
+          if (matchedBlockPosition !== null) {
+            const blockPosition = editor.state.doc.resolve(matchedBlockPosition);
+            const blockDepth = Math.max(blockPosition.depth, 1);
+            const blockNode = blockPosition.node(blockDepth);
+            const blockStart = blockPosition.before(blockDepth);
+            const blockEnd = blockStart + blockNode.nodeSize;
+            editor.chain().focus()
+              .setTextSelection({ from: blockStart + 1, to: blockEnd - 1 })
+              .clearNodes()
+              .insertContentAt(blockStart, proposed_text)
+              .run();
+          }
         }
         window.__archtech_preview_original = null;
       }
@@ -943,15 +1085,10 @@ export default function TiptapEditor({
 
     const handleRejectContentEdit = (e) => {
       if (!editor) return;
-      const { original_text, proposed_text } = e.detail;
-      if (original_text && proposed_text) {
-        const baseMarkdown = window.__archtech_preview_original || editor.storage.markdown.getMarkdown();
-        const matchedText = findBestMatch(original_text, baseMarkdown);
-        if (matchedText) {
-          editor.commands.setContent(marked.parse(baseMarkdown), true);
-        }
-        window.__archtech_preview_original = null;
+      if (window.__archtech_preview_original) {
+        editor.commands.setContent(marked.parse(window.__archtech_preview_original), true);
       }
+      window.__archtech_preview_original = null;
     };
 
     window.addEventListener('preview-content-edit', handlePreviewContentEdit);
@@ -979,47 +1116,64 @@ export default function TiptapEditor({
 
   // Scroll to focused chat block
   useEffect(() => {
-    if (!editor || !focusedChatBlock) return;
+    if (!editor || !focusedChatBlock) {
+      return;
+    }
+    console.log("[TiptapEditor] focusedChatBlock set:", focusedChatBlock);
 
     const timeoutId = setTimeout(() => {
-      const { state, view } = editor;
-      let foundPos = null;
+      const editorContainer = containerRef.current;
+      console.log("[TiptapEditor] editorContainer:", editorContainer);
+      if (!editorContainer) {
+        console.log("[TiptapEditor] Editor container not found");
+        if (setFocusedChatBlock) setFocusedChatBlock(null);
+        return;
+      }
 
-      state.doc.descendants((node, pos) => {
-        if (
-          node.isBlock &&
-          normalizeText(node.textContent) ===
-            normalizeText(focusedChatBlock.text)
-        ) {
-          foundPos = pos;
-          return false;
-        }
-      });
+      const blockElement = editorContainer.querySelector(
+        `[data-chat-block-number="${focusedChatBlock.blockNumber}"]`,
+      );
+      console.log(
+        "[TiptapEditor] querySelector for block",
+        focusedChatBlock.blockNumber,
+        ":",
+        blockElement,
+      );
 
-      if (foundPos !== null) {
-        const dom = view.nodeDOM(foundPos);
-        if (dom && dom.scrollIntoView) {
-          dom.scrollIntoView({ behavior: "smooth", block: "center" });
-          dom.classList.add(
-            "ring-2",
-            "ring-blue-500",
-            "bg-blue-50",
-            "transition-all",
-            "duration-700",
-          );
-          setTimeout(() => {
-            dom.classList.remove("ring-2", "ring-blue-500", "bg-blue-50");
-          }, 1500);
-        } else {
-          view.dispatch(state.tr.scrollIntoView());
-        }
+      if (blockElement) {
+        console.log(
+          "[TiptapEditor] Block element found, applying highlight",
+          blockElement,
+        );
+        blockElement.scrollIntoView({ behavior: "smooth", block: "center" });
+
+        // Set shared variable so the decoration metadata gets the right data-is-focused value
+        focusedChatBlockNumber = focusedChatBlock.blockNumber;
+
+        setTimeout(() => {
+          console.log("[TiptapEditor] Removing highlight after 2s");
+          focusedChatBlockNumber = null;
+        }, 1000);
+      } else {
+        console.log(
+          "[TiptapEditor] Block element not found. Searching for debug:",
+        );
+        const blockElements = editorContainer.querySelectorAll("[data-chat-block-number]");
+        console.log(
+          "[TiptapEditor] All matching block elements:",
+          blockElements,
+        );
+        console.log(
+          "[TiptapEditor] Looking for block number:",
+          focusedChatBlock.blockNumber,
+        );
       }
 
       if (setFocusedChatBlock) setFocusedChatBlock(null);
     }, 150);
 
     return () => clearTimeout(timeoutId);
-  }, [focusedChatBlock, editor, setFocusedChatBlock]);
+  }, [focusedChatBlock, setFocusedChatBlock]);
 
   // Table Overlay Ref
   const stateTableOverlayRef = useRef({
@@ -1393,9 +1547,16 @@ export default function TiptapEditor({
   // Block markdown context Rendering
   useEffect(() => {
     if (editor && !editor.isFocused) {
-      const cur = editor.storage.markdown.getMarkdown();
-      if (content !== cur)
-        editor.commands.setContent(marked.parse(content || ""), false);
+      if (typeof content === 'string') {
+        const cur = editor.storage.markdown.getMarkdown();
+        if (content !== cur) {
+          editor.commands.setContent(marked.parse(content || ""), false);
+        }
+      } else if (content && typeof content === 'object') {
+        // If content is already a JSON document, set it directly.
+        // Tiptap's internal diffing will ensure it only updates changed nodes.
+        editor.commands.setContent(content, false);
+      }
     }
   }, [content, editor]);
 
@@ -1586,13 +1747,24 @@ export default function TiptapEditor({
             : ""
         }
         .is-chat-selected {
-          border-left: 3px solid #3b82f6 !important;
-          background-color: #eff6ff !important;
-          padding-left: 8px !important;
-          padding-right: 32px !important;
+          border-left: 3px solid #3b82f6;
+          background-color: #eff6ff;
+          padding-left: 8px;
+          padding-right: 32px;
           border-radius: 2px;
-          margin-left: -11px !important;
+          margin-left: -11px;
           position: relative;
+          transition: all 0.3s ease;
+        }
+        .is-chat-selected[data-is-focused="true"] {
+          background-color: #eff6ff !important;
+          border: 2px solid #3b82f6 !important;
+          border-radius: 4px !important;
+          padding-top: 10px !important;
+          padding-bottom: 10px !important;
+          padding-left: 20px !important;
+          padding-right: 20px !important;
+          box-shadow: 0 0 0 2px rgba(59,130,246,0.15) !important;
         }
         .is-chat-selected::after {
           content: attr(data-chat-block-number);
@@ -1698,47 +1870,6 @@ export default function TiptapEditor({
               tippyOptions={{ duration: 150, placement: "top-start" }}
               className="flex bg-white/95 backdrop-blur-xl border border-slate-200 rounded-2xl p-1.5 shadow-2xl"
             >
-              {/* {editor.isActive("table") ? (
-                // <div className="flex items-center gap-1">
-                //   <BubbleBtn
-                //     onClick={() => editor.chain().focus().addRowAfter().run()}
-                //     title="Add row"
-                //   >
-                //     <Plus size={15} />
-                //   </BubbleBtn>
-                //   <BubbleBtn
-                //     onClick={() => editor.chain().focus().deleteRow().run()}
-                //     title="Delete row"
-                //     danger
-                //   >
-                //     <Minus size={15} />
-                //   </BubbleBtn>
-                //   <BubbleSep />
-                //   <BubbleBtn
-                //     onClick={() =>
-                //       editor.chain().focus().addColumnAfter().run()
-                //     }
-                //     title="Add col"
-                //   >
-                //     <Columns size={15} />
-                //   </BubbleBtn>
-                //   <BubbleBtn
-                //     onClick={() => editor.chain().focus().deleteColumn().run()}
-                //     title="Delete col"
-                //     danger
-                //   >
-                //     <Trash size={15} />
-                //   </BubbleBtn>
-                //   <BubbleSep />
-                //   <BubbleBtn
-                //     onClick={() => editor.chain().focus().deleteTable().run()}
-                //     title="Delete table"
-                //     danger
-                //   >
-                //     <TableIcon size={15} />
-                //   </BubbleBtn>
-                // </div>
-              ) : ( */}
               <div className="flex items-center gap-0.5">
                 <BubbleBtn
                   onClick={() => editor.chain().focus().toggleBold().run()}
@@ -1824,7 +1955,7 @@ export default function TiptapEditor({
                   <Heading6 size={15} />
                 </BubbleBtn>
                 <BubbleSep />
-                <BubbleBtn
+                {/* <BubbleBtn
                   onClick={() =>
                     editor.chain().focus().toggleBulletList().run()
                   }
@@ -1848,8 +1979,86 @@ export default function TiptapEditor({
                 >
                   <Code size={15} />
                 </BubbleBtn>
+                <BubbleSep /> */}
+                {enableChatContext && (
+                  <BubbleBtn
+                    onClick={() => {
+                      if (!setSelectedChatBlocks) return;
+                      const { from, to } = editor.state.selection;
+                      const text = editor.state.doc.textBetween(from, to, "\n");
+                      const normText = normalizeText(text);
+                      
+                      let markdown = text;
+                      try {
+                        const slice = editor.state.selection.content();
+                        const tempDoc = editor.state.doc.type.create(null, slice.content);
+                        markdown = editor.storage.markdown.serializer.serialize(tempDoc);
+                      } catch {
+                        markdown = text;
+                      }
+                      
+                      const preview = markdown.slice(0, 80);
+                      
+                      const isSelected = selectedChatBlocks.some(
+                        (b) =>
+                          normalizeText(b.text) === normText &&
+                          (b.section === undefined || b.section === activeSection)
+                      );
+                      
+                      if (isSelected) {
+                        setSelectedChatBlocks((prev) =>
+                          prev.filter(
+                            (b) =>
+                              !(
+                                normalizeText(b.text) === normText &&
+                                (b.section === undefined || b.section === activeSection)
+                              )
+                          )
+                        );
+                      } else {
+                        setSelectedChatBlocks((prev) => [
+                          ...prev,
+                          {
+                            text,
+                            markdown,
+                            blockNumber: prev.length + 1,
+                            preview,
+                            section: activeSection,
+                            ...(versionNumber ? { version: versionNumber } : {}),
+                          },
+                        ]);
+                      }
+                    }}
+                    title="Send to Chat Context"
+                    active={(() => {
+                      if (!editor) return false;
+                      const { from, to } = editor.state.selection;
+                      const text = editor.state.doc.textBetween(from, to, "\n");
+                      const normText = normalizeText(text);
+                      return selectedChatBlocks?.some(
+                        (b) =>
+                          normalizeText(b.text) === normText &&
+                          (b.section === undefined || b.section === activeSection)
+                      );
+                    })()}
+                  >
+                    <MessageSquare size={15} />
+                  </BubbleBtn>
+                )}
+                <BubbleBtn
+                  onClick={() => {
+                    const { from, to } = editor.state.selection;
+                    const text = editor.state.doc.textBetween(from, to, "\n");
+                    navigator.clipboard.writeText(text);
+                    setIsCopied(true);
+                    setTimeout(() => setIsCopied(false), 1000);
+                  }}
+                  title={isCopied ? "Copied!" : "Copy text"}
+                  success={isCopied}
+                >
+                  {isCopied ? <Check size={15} /> : <Copy size={15} />}
+                </BubbleBtn>
               </div>
-              {/* )} */}
             </BubbleMenu>
           )}
 
@@ -2138,8 +2347,20 @@ export default function TiptapEditor({
           onToggleSelect={() => {
             if (!setSelectedChatBlocks) return;
             const text = hoveredBlock.node.textContent;
-            const preview = text.slice(0, 80);
             const normText = normalizeText(text);
+
+            // Get markdown representation of the block node
+            let markdown = text;
+            if (editor) {
+              try {
+                const tempDoc = editor.state.doc.type.create(null, [hoveredBlock.node]);
+                markdown = editor.storage.markdown.serializer.serialize(tempDoc);
+              } catch {
+                markdown = text;
+              }
+            }
+            const preview = markdown.slice(0, 80);
+
             if (
               selectedChatBlocks.some(
                 (b) =>
@@ -2161,6 +2382,7 @@ export default function TiptapEditor({
                 ...prev,
                 {
                   text,
+                  markdown,
                   blockNumber: prev.length + 1,
                   preview,
                   section: activeSection,
@@ -2262,17 +2484,19 @@ export default function TiptapEditor({
 }
 
 // ─── Bubble button helpers ────────────────────────────────────────────────────────────
-function BubbleBtn({ onClick, active, danger, title, children }) {
+function BubbleBtn({ onClick, active, danger, success, title, children }) {
   return (
     <button
       onClick={onClick}
       title={title}
       className={`p-2 rounded-xl transition-all ${
-        active
-          ? "bg-primary-500 text-white shadow-lg shadow-primary-500/30"
-          : danger
-            ? "text-rose-400 hover:bg-rose-500/20"
-            : "text-slate-500 hover:bg-slate-100"
+        success
+          ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/30"
+          : active
+            ? "bg-primary-500 text-white shadow-lg shadow-primary-500/30"
+            : danger
+              ? "text-rose-400 hover:bg-rose-500/20"
+              : "text-slate-500 hover:bg-slate-100"
       }`}
     >
       {children}

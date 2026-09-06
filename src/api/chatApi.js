@@ -40,8 +40,8 @@ export async function* sendChatMessage({ message, session_id, project_id, signal
           try {
             const event = JSON.parse(line.slice(6));
             yield event;
-          } catch {
-            // Skip malformed JSON
+          } catch (error){
+            console.error(`[ERROR] : ${error}`)
           }
         }
       }
@@ -69,5 +69,26 @@ export async function fetchChatMessages(sessionId) {
 export async function fetchChatSessions() {
   const res = await fetch(getApiUrl('/chat/sessions'));
   if (!res.ok) throw new Error('Failed to fetch sessions');
+  return res.json();
+}
+
+/**
+ * Submit a user response to a tool interaction (e.g. selection/prompt).
+ * @param {Object} options
+ * @param {string} options.session_id
+ * @param {string} options.tool_call_id
+ * @param {any} options.response - User's selection or typed response.
+ * @returns {Promise<{status: string}>}
+ */
+export async function sendChatInteraction({ session_id, tool_call_id, response }) {
+  const res = await fetch(getApiUrl('/chat/interact'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id, tool_call_id, response }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Chat interaction error ${res.status}`);
+  }
   return res.json();
 }

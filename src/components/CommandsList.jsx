@@ -24,6 +24,13 @@ const CommandsList = forwardRef((props, ref) => {
 
   useEffect(() => setSelectedIndex(0), [props.items]);
 
+  // Keep the highlighted item visible inside the scrollable list
+  const listRef = React.useRef(null);
+  useEffect(() => {
+    const el = listRef.current?.children[selectedIndex];
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex, props.items]);
+
   useImperativeHandle(ref, () => ({
     onKeyDown: (event) => {
       if (!event) return false;
@@ -48,31 +55,33 @@ const CommandsList = forwardRef((props, ref) => {
 
   return (
     <div className="bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden min-w-[160px] p-1 animate-in fade-in zoom-in-95 duration-100">
-      {props.items.length > 0 ? (
-        props.items.map((item, index) => (
-          <button
-            key={index}
-            onClick={() => selectItem(index)}
-            className={`flex items-center gap-3 w-full px-3 py-2 text-left rounded-lg transition-all ${
-              index === selectedIndex ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center border ${
-              index === selectedIndex ? 'border-indigo-200 ' + (item.iconBg || 'bg-white') : 'border-slate-100 ' + (item.iconBg || 'bg-slate-50')
-            }`}>
-              <span className="text-[13px] font-black leading-none flex items-center justify-center">
-                {typeof item.icon === 'string' ? (item.icon || item.title[0]) : item.icon}
-              </span>
-            </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-[11px] font-black uppercase tracking-tight">{item.title}</span>
-              <span className="text-[9px] text-slate-400 font-medium">{item.description}</span>
-            </div>
-          </button>
-        ))
-      ) : (
-        <div className="px-3 py-2 text-xs text-slate-400 italic">No commands found</div>
-      )}
+      <div ref={listRef} className="max-h-[320px] overflow-y-auto">
+        {props.items.length > 0 ? (
+          props.items.map((item, index) => (
+            <button
+              key={index}
+              onClick={() => selectItem(index)}
+              className={`flex items-center gap-3 w-full px-3 py-2 text-left rounded-lg transition-all ${
+                index === selectedIndex ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center border ${
+                index === selectedIndex ? 'border-indigo-200 ' + (item.iconBg || 'bg-white') : 'border-slate-100 ' + (item.iconBg || 'bg-slate-50')
+              }`}>
+                <span className={`text-[13px] font-black leading-none flex items-center justify-center ${item.iconColor || 'text-slate-500'}`}>
+                  {typeof item.icon === 'string' ? (item.icon || item.title[0]) : item.icon}
+                </span>
+              </div>
+              <div className="flex flex-col min-w-0">
+                <span className="text-[11px] font-black uppercase tracking-tight">{item.title}</span>
+                <span className="text-[9px] text-slate-400 font-medium">{item.description}</span>
+              </div>
+            </button>
+          ))
+        ) : (
+          <div className="px-3 py-2 text-xs text-slate-400 italic">No commands found</div>
+        )}
+      </div>
     </div>
   );
 });

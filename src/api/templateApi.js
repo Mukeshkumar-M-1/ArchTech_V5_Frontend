@@ -32,10 +32,10 @@ async function request(url, options = {}) {
 /**
  * Fetch the list of template sections for a project.
  * @param {string} projectId - The unique project identifier.
- * @param {string} [templateType='Standard'] - The template type to sync.
+ * @param {string} [templateType='BSP-Board-1'] - The template type to sync.
  * @returns {Promise<Array<{filename: string, title: string, section_number: number, is_generated: boolean}>>}
  */
-export async function fetchSections(projectId, templateType = 'Standard') {
+export async function fetchSections(projectId, templateType = 'BSP-Board-1') {
   return request(`/template-sections/${projectId}`, {
     method: 'POST',
     body: { template_type: templateType },
@@ -146,12 +146,38 @@ export async function validateDocument(projectId) {
 }
 
 /**
- * Fetch all document-level versions with section counts.
+ * Fetch all document-level versions with section counts and per-version metadata.
  * @param {string} projectId - The unique project identifier.
- * @returns {Promise<Array<{version: number, section_count: number, sections: Array}>>}
+ * @returns {Promise<{
+ *   versions: Array<{version: number, section_count: number, sections: Array,
+ *     tag: string, template: string|null, created_at: string|null,
+ *     regenerated_sections: string[], deleted: boolean, deleted_at: string|null}>,
+ *   deleted_versions: Array,
+ *   templates: string[]
+ * }>}
  */
 export async function fetchDocumentVersions(projectId) {
   return request(`/document-versions/${projectId}`);
+}
+
+/**
+ * Soft-delete a document version (content is kept; version moves to the deleted list).
+ * @param {string} projectId - The unique project identifier.
+ * @param {number} version - The document version number to delete.
+ * @returns {Promise<{status: string, version: number, deleted_at: string}>}
+ */
+export async function deleteDocumentVersion(projectId, version) {
+  return request(`/document-version/${projectId}/${version}`, { method: 'DELETE' });
+}
+
+/**
+ * Restore a previously soft-deleted document version.
+ * @param {string} projectId - The unique project identifier.
+ * @param {number} version - The document version number to restore.
+ * @returns {Promise<{status: string, version: number}>}
+ */
+export async function restoreDocumentVersion(projectId, version) {
+  return request(`/document-version/${projectId}/${version}/restore`, { method: 'POST' });
 }
 
 /**
@@ -316,10 +342,10 @@ export async function resetTemplateToSource(projectId, templateName) {
  * Create a new template type scoped to a project.
  * @param {string} projectId - The unique project identifier.
  * @param {string} templateName - The name for the new template.
- * @param {string} [sourceTemplateName="Standard"] - Template to copy sections from.
+ * @param {string} [sourceTemplateName="BSP-Board-1"] - Template to copy sections from.
  * @returns {Promise<{status: string, message: string, template: Object}>}
  */
-export async function createTemplateType(projectId, templateName, sourceTemplateName = 'Standard') {
+export async function createTemplateType(projectId, templateName, sourceTemplateName = 'BSP-Board-1') {
   return request(`/api/templates/create/${projectId}`, {
     method: 'POST',
     body: { template_name: templateName, source_template: sourceTemplateName },

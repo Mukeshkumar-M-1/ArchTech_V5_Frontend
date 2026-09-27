@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import debounce from 'lodash.debounce';
 import useToastStore from '../../store/toastStore';
+import useTemplateStore from '../../store/templateStore';
 import {
   fetchSections,
   fetchSectionContent,
@@ -17,6 +18,7 @@ import {
   fetchSelectedTemplate,
   selectProjectTemplateType,
 } from '../../api/templateApi';
+import { fetchProjectSettings } from '../../api/settingsApi';
 import SectionList from './SectionList';
 import SectionToolbar from './SectionToolbar';
 import SectionContent from './SectionContent';
@@ -47,16 +49,20 @@ function _toTemplateArray(templatesObj) {
 export default function TemplatePanel({ project, onSectionsChange, selectedChatBlocks, setSelectedChatBlocks }) {
   const addToast = useToastStore((s) => s.addToast);
 
+  // Generation progress lives in the global store so it survives sub-tab switches
+  const isGenerating = useTemplateStore((s) => s.isGenerating);
+  const storeProjectId = useTemplateStore((s) => s.projectId);
+  const setIsGenerating = useTemplateStore((s) => s.setIsGenerating);
+  const setProgress = useTemplateStore((s) => s.setProgress);
+
   // State
   const [sections, setSections] = useState([]);
   const [selectedFilename, setSelectedFilename] = useState(null);
   const [content, setContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [showJsonViewer, setShowJsonViewer] = useState(false);
   const [phase3Data, setPhase3Data] = useState(null);
   const [jsonViewerLoading, setJsonViewerLoading] = useState(false);
-  const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newSectionName, setNewSectionName] = useState('');
@@ -64,7 +70,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
   const [jsonViewerWidth, setJsonViewerWidth] = useState(400);
 
   // Template type management state
-  const [selectedTemplateName, setSelectedTemplateName] = useState('Standard');
+  const [selectedTemplateName, setSelectedTemplateName] = useState('BSP-Board-1');
   const [availableTemplates, setAvailableTemplates] = useState([]);
   const [templateLockStateMap, setTemplateLockStateMap] = useState({});
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
@@ -73,6 +79,8 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
   const [showCreateTemplateForm, setShowCreateTemplateForm] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
+  const templateNameInvalid =
+    newTemplateName.trim() !== '' && !/^[a-zA-Z0-9_ -]+$/.test(newTemplateName.trim());
 
   // Computed: is the current template type locked (prevents deletion)?
   const currentTemplateEntry = availableTemplates?.find(
@@ -81,13 +89,10 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
   const templateLocked = currentTemplateEntry?.locked ?? false;
 
   // Refs for polling
-  const progressIntervalRef = useRef(null);
   const projectRef = useRef(project);
-  const isGeneratingRef = useRef(false);
 
   // Keep refs in sync
   useEffect(() => { projectRef.current = project; }, [project]);
-  useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating]);
 
   // ─── Load template registry on mount ─────────────────────────────
   useEffect(() => {
@@ -97,7 +102,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
         setAvailableTemplates(_toTemplateArray(registryData?.templates));
       })
       .catch((err) => {
-        addToast('error', `Failed to load templates: ${err.message}`);
+        addToast(`Failed to load templates: ${err.message}`, 'error');
       });
   }, [project?.id, addToast]);
 
@@ -120,14 +125,18 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
 
     setIsLoading(true);
     setError(null);
-    // Clear progress on project change
-    setProgress(null);
+    // Reset generation progress when switching to a different project
+    const templateStore = useTemplateStore.getState();
+    if (templateStore.projectId !== project.id) {
+      templateStore.resetTemplateProgress();
+      templateStore.setProjectId(project.id);
+    }
 
     // Fetch the persisted selected template name
     fetchSelectedTemplate(project.id)
       .then((selectedData) => {
         if (cancelled) return;
-        const persistedTemplateName = selectedData?.template_type ?? 'Standard';
+        const persistedTemplateName = selectedData?.template_type ?? 'BSP-Board-1';
         setSelectedTemplateName(persistedTemplateName);
         return fetchSections(project.id, persistedTemplateName);
       })
@@ -157,70 +166,79 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       .catch((err) => setError(err.message));
   }, [selectedFilename, project?.id, selectedTemplateName]);
 
-  // ─── Progress polling ────────────────────────────────────────────
-  const startProgressPolling = useCallback((projectId) => {
-    // Clear any existing interval
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+  // ─── Load Phase 3 analysis into the Report/JSON viewer ───────────
+  // Defined outside the polling effect on purpose: the analysis fetch must
+  // NOT be gated by the polling effect's isPollingActive flag, because
+  // setIsGenerating(false) at the terminal state re-runs that effect's
+  // cleanup before this fetch resolves — which previously left the Report
+  // panel stuck on "Loading Analysis..." forever.
+  const loadPhase3Analysis = useCallback(async () => {
+    if (!project?.id) return;
+    setJsonViewerLoading(true);
+    setShowJsonViewer(true);
+    try {
+      const analysisData = await fetchPhase3Analysis(project.id);
+      setPhase3Data(analysisData);
+    } catch (err) {
+      addToast('No analysis data available', 'info');
+    } finally {
+      setJsonViewerLoading(false);
+    }
+  }, [project?.id, addToast]);
 
-    // Poll immediately then every 3s
+  // ─── Progress polling (store-driven; resumes after remount) ──────
+  useEffect(() => {
+    if (!project?.id || !isGenerating || storeProjectId !== project.id) return;
+    // False only when this effect instance is torn down (dep change/unmount);
+    // it no longer guards the terminal-state analysis load above.
+    let isPollingActive = true;
+    let consecutivePollFailures = 0;
+
     const poll = async () => {
-      if (!isGeneratingRef.current) {
-        if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-        progressIntervalRef.current = null;
-        return;
-      }
       try {
-        const data = await fetchProgress(projectId);
-        setProgress(data);
+        const progressPayload = await fetchProgress(project.id);
+        if (!isPollingActive) return;
+        consecutivePollFailures = 0;
+        setProgress(progressPayload);
         // Stop polling when terminal state reached
-        if (data?.status === 'complete' || data?.status === 'error') {
-          if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-          progressIntervalRef.current = null;
+        if (progressPayload?.status === 'complete' || progressPayload?.status === 'error') {
           setIsGenerating(false);
-          if (data.status === 'complete') {
-            // Fetch phase 3 data and show JSON viewer
-            setJsonViewerLoading(true);
-            setShowJsonViewer(true);
-            try {
-              const analysisData = await fetchPhase3Analysis(projectId);
-              setPhase3Data(analysisData);
-            } catch {
-              addToast('info', 'No analysis data available');
-            } finally {
-              setJsonViewerLoading(false);
-            }
+          if (progressPayload.status === 'complete') {
+            // Fetch phase 3 data and open the Report panel
+            loadPhase3Analysis();
           } else {
-            addToast('error', `Generation failed: ${data.error || 'Unknown error'}`);
+            addToast(`Generation failed: ${progressPayload.error || 'Unknown error'}`, 'error');
           }
         }
       } catch {
-        // Ignore polling errors
+        // fetchProgress throws on non-OK responses (e.g. backend lost the
+        // generation); 3 consecutive failures mean it is no longer running
+        consecutivePollFailures += 1;
+        if (isPollingActive && consecutivePollFailures >= 3) {
+          setIsGenerating(false);
+          setProgress(null);
+          addToast('Generation is no longer running', 'info');
+        }
       }
     };
 
-    poll(); // immediate first poll
-    progressIntervalRef.current = setInterval(poll, 3000);
-  }, [addToast]);
+    poll(); // immediate first poll (also reconciles state after a remount)
+    const pollingInterval = setInterval(poll, 3000);
+    return () => {
+      isPollingActive = false;
+      clearInterval(pollingInterval);
+    };
+  }, [project?.id, isGenerating, storeProjectId, setIsGenerating, setProgress, loadPhase3Analysis, addToast]);
 
-  const stopProgressPolling = useCallback(() => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
-    }
-    isGeneratingRef.current = false;
-    setIsGenerating(false);
-  }, []);
-
-  // Clean up on unmount
+  // Clean up auto-save on unmount
   useEffect(() => {
     return () => {
-      stopProgressPolling();
       if (saveRef.current) {
         saveRef.current.cancel();
         saveRef.current = null;
       }
     };
-  }, [stopProgressPolling]);
+  }, []);
 
   // ─── Auto-save with 100ms debounce ───────────────────────────────
   const saveRef = useRef(null);
@@ -239,7 +257,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       try {
         await updateSectionContent(projectId, filename, newContent);
       } catch (err) {
-        addToast('error', `Save failed: ${err.message}`);
+        addToast(`Save failed: ${err.message}`, 'error');
       } finally {
         setIsSaving(false);
       }
@@ -259,38 +277,51 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
 
   // ─── Template creation handler ───────────────────────────────────
   const handleCreateTemplate = useCallback(async () => {
-    if (!newTemplateName.trim() || isCreatingTemplate || !project?.id) return;
+    if (!newTemplateName.trim() || templateNameInvalid || isCreatingTemplate || !project?.id) return;
     setIsCreatingTemplate(true);
     try {
       const result = await createTemplateType(project.id, newTemplateName.trim());
-      addToast('success', result.message || `Template '${newTemplateName.trim()}' created`);
+      addToast(result.message || `Template '${newTemplateName.trim()}' created`, 'success');
       setNewTemplateName('');
       setShowCreateTemplateForm(false);
       // Refresh template registry
       const registryData = await fetchTemplateTypeRegistry(project.id);
       setAvailableTemplates(_toTemplateArray(registryData?.templates));
     } catch (err) {
-      addToast('error', `Failed to create template: ${err.message}`);
+      addToast(`Failed to create template: ${err.message}`, 'error');
     } finally {
       setIsCreatingTemplate(false);
     }
-  }, [newTemplateName, isCreatingTemplate, project?.id, addToast]);
+  }, [newTemplateName, templateNameInvalid, isCreatingTemplate, project?.id, addToast]);
 
   // ─── Handlers ────────────────────────────────────────────────────
 
   const handleGenerate = useCallback(async () => {
-    if (!project?.id || isGeneratingRef.current) return;
+    if (!project?.id || useTemplateStore.getState().isGenerating) return;
+
+    // LLM settings must be configured before generation can run
+    try {
+      const settings = await fetchProjectSettings(project.id);
+      if (!settings?.api_url || !settings?.api_key || !settings?.default_model) {
+        addToast(
+          "LLM is not configured. Open Settings and set API URL, API Key and Model before generating.",
+          "error",
+        );
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to load LLM settings:", err);
+      addToast("Could not verify LLM settings. Configure them in Settings before generating.", "error");
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
     try {
       await generateSections(project.id);
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
       setProgress(null);
-
-      // Start polling for progress
-      startProgressPolling(project.id);
+      setIsGenerating(true); // polling effect starts on the next render
 
       // Refresh sections list
       const updated = await fetchSections(project.id, selectedTemplateName);
@@ -300,13 +331,12 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       }
     } catch (err) {
       setError(err.message);
-      addToast('error', `Generation failed: ${err.message}`);
+      addToast(`Generation failed: ${err.message}`, 'error');
       setIsGenerating(false);
-      isGeneratingRef.current = false;
     } finally {
       setIsLoading(false);
     }
-  }, [project?.id, addToast, startProgressPolling]);
+  }, [project?.id, addToast, selectedTemplateName, setIsGenerating, setProgress]);
 
   const handleCancelGeneration = useCallback(async () => {
     if (!project?.id) return;
@@ -315,54 +345,46 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
     } catch (err) {
       setError(err.message);
     }
-    stopProgressPolling();
-    addToast('info', 'Generation cancelled');
-  }, [project?.id, addToast, stopProgressPolling]);
-
-  const fetchJsonViewerData = useCallback(async () => {
-    if (!project?.id) return;
-    setJsonViewerLoading(true);
-    setShowJsonViewer(true);
-    try {
-      const data = await fetchPhase3Analysis(project.id);
-      setPhase3Data(data);
-    } catch (err) {
-      addToast('info', 'No analysis data available');
-    } finally {
-      setJsonViewerLoading(false);
-    }
-  }, [project?.id, addToast]);
+    setIsGenerating(false);
+    setProgress(null);
+    addToast('Generation cancelled', 'info');
+  }, [project?.id, addToast, setIsGenerating, setProgress]);
 
   const handleShowJsonViewer = useCallback(() => {
     if (showJsonViewer) {
       setShowJsonViewer(false);
       setPhase3Data(null);
     } else {
-      fetchJsonViewerData();
+      loadPhase3Analysis();
     }
-  }, [showJsonViewer, fetchJsonViewerData]);
+  }, [showJsonViewer, loadPhase3Analysis]);
 
   const handleCreateSection = useCallback(async () => {
     if (!project?.id || !newSectionName.trim()) return;
     try {
       const result = await createSectionFile(project.id, newSectionName.trim());
-      addToast('success', `Created: ${result.filename}`);
+      addToast(`Created: ${result.filename}`, 'success');
       setNewSectionName('');
       setShowCreateModal(false);
+      // Creating a section inside a global template flips it to project origin
+      // backend-side — refresh the registry so the Global/Local badge updates.
+      fetchTemplateTypeRegistry(project.id).then((registryData) => {
+        setAvailableTemplates(_toTemplateArray(registryData?.templates));
+      }).catch(() => {});
       fetchSections(project.id, selectedTemplateName).then((updated) => {
         setSections(updated);
         setSelectedFilename(result.filename);
       });
     } catch (err) {
-      addToast('error', `Failed to create section: ${err.message}`);
+      addToast(`Failed to create section: ${err.message}`, 'error');
     }
-  }, [project?.id, newSectionName, addToast]);
+  }, [project?.id, newSectionName, addToast, selectedTemplateName]);
 
   const handleDeleteSection = useCallback(async (filename) => {
     if (!project?.id) return;
     try {
       await deleteSectionFile(project.id, filename);
-      addToast('info', `Deleted: ${filename}`);
+      addToast(`Deleted: ${filename}`, 'success');
       fetchSections(project.id, selectedTemplateName).then((updated) => {
         setSections(updated);
         if (selectedFilename === filename) {
@@ -373,7 +395,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       });
     } catch (err) {
       setError(err.message);
-      addToast('error', `Delete failed: ${err.message}`);
+      addToast(`Delete failed: ${err.message}`, 'error');
     }
   }, [project?.id, selectedFilename, addToast]);
 
@@ -387,9 +409,9 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
       setSections(syncedSections);
       setSelectedFilename(syncedSections?.[0]?.filename ?? null);
       setContent('');
-      addToast('success', `Switched to '${newTemplateName}' template`);
+      addToast(`Switched to '${newTemplateName}' template`, 'success');
     } catch (err) {
-      addToast('error', `Failed to switch template: ${err.message}`);
+      addToast(`Failed to switch template: ${err.message}`, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -415,6 +437,32 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
     }).catch(() => {});
   }, [project?.id]);
 
+  // ─── Template deleted (from TemplateDetailsDialog) ────────────────
+  // Refresh the registry so the deleted template disappears from the dropdown;
+  // if it was the selected one, switch to the first remaining template.
+  const handleTemplateDeleted = useCallback(async (deletedTemplateName) => {
+    if (!project?.id) return;
+    try {
+      const registryData = await fetchTemplateTypeRegistry(project.id);
+      const remainingTemplates = _toTemplateArray(registryData?.templates);
+      setAvailableTemplates(remainingTemplates);
+
+      const locksData = await fetchTemplateLocks(project.id);
+      setTemplateLockStateMap(locksData || {});
+
+      if (deletedTemplateName === selectedTemplateName && remainingTemplates.length) {
+        const fallbackName = remainingTemplates[0].name;
+        const syncedSections = await selectProjectTemplateType(project.id, fallbackName);
+        setSelectedTemplateName(fallbackName);
+        setSections(syncedSections);
+        setSelectedFilename(syncedSections?.[0]?.filename ?? null);
+        setContent('');
+      }
+    } catch {
+      // Registry refresh is best-effort; the dropdown reloads on next mount anyway
+    }
+  }, [project?.id, selectedTemplateName]);
+
   // ─── Determine if the currently selected section is locked ───────
   const currentSectionIsLocked = templateLockStateMap?.template_type === selectedTemplateName;
 
@@ -434,8 +482,6 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
           onAddClick={() => setShowCreateModal(true)}
           loading={isLoading}
           templateLocked={templateLocked}
-          showTemplateType
-          templateName={selectedTemplateName}
         />
 
         <div className="w-full h-full flex flex-col overflow-hidden">
@@ -451,10 +497,8 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
             onCreateTemplate={() => setShowCreateTemplateForm(true)}
             onTemplateChange={handleTemplateTypeChange}
             onShowTemplateDetails={() => setShowTemplateDialog(true)}
-            isGenerating={isGenerating}
             showJsonViewer={showJsonViewer}
             hasJsonData={phase3Data}
-            progress={progress}
             templateLocked={templateLocked}
           />
 
@@ -599,9 +643,16 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
                   if (e.key === 'Escape') { setShowCreateTemplateForm(false); setNewTemplateName(''); }
                 }}
                 disabled={isCreatingTemplate}
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 font-sans outline-none"
+                className={`w-full px-3 py-2 rounded-lg border text-sm text-slate-900 font-sans outline-none ${
+                  templateNameInvalid ? 'border-rose-300' : 'border-slate-200'
+                }`}
               />
             </div>
+            {templateNameInvalid && (
+              <p className="text-xs text-rose-500 -mt-2 mb-3">
+                Only letters, numbers, spaces, hyphens, and underscores are allowed.
+              </p>
+            )}
 
             <div className="flex justify-end gap-2">
               <button
@@ -612,9 +663,9 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
               </button>
               <button
                 onClick={handleCreateTemplate}
-                disabled={!newTemplateName.trim() || isCreatingTemplate}
+                disabled={!newTemplateName.trim() || templateNameInvalid || isCreatingTemplate}
                 className={`px-4 py-2 rounded-lg border-none text-xs font-semibold cursor-pointer text-white transition-all duration-120 flex items-center gap-1.5 ${
-                  newTemplateName.trim() && !isCreatingTemplate
+                  newTemplateName.trim() && !templateNameInvalid && !isCreatingTemplate
                     ? 'bg-primary-600 hover:bg-primary-700'
                     : 'text-slate-400 bg-slate-100 cursor-default'
                 }`}
@@ -637,6 +688,7 @@ export default function TemplatePanel({ project, onSectionsChange, selectedChatB
           onClose={() => setShowTemplateDialog(false)}
           onSectionLockChange={handleSectionLockChange}
           onTemplateLockChange={handleTemplateLockChange}
+          onTemplateDeleted={handleTemplateDeleted}
         />
       )}
     </div>

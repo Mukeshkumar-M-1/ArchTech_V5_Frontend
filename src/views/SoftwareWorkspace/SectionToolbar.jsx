@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Brain, Plus, Loader2, ChevronDown, FileText, Lock, FileChartColumn, LayoutTemplate, FilePlus } from 'lucide-react';
 import { themeTextColors, themeColors } from '../../utils/theme';
+import useTemplateStore from '../../store/templateStore';
 
 /**
  * SectionToolbar - Renders the top toolbar with template selector, actions, and progress bar.
@@ -15,9 +16,7 @@ import { themeTextColors, themeColors } from '../../utils/theme';
  * @param {() => void} [props.onCreateTemplate] - Create new template callback.
  * @param {(templateName: string) => void} props.onTemplateChange - Template type change callback.
  * @param {() => void} props.onShowTemplateDetails - Open template details dialog callback.
- * @param {boolean} props.isGenerating - Whether generation is in progress.
  * @param {boolean} [props.showJsonViewer] - Whether the JSON viewer is visible.
- * @param {Object|null} [props.progress] - Progress data from backend polling.
  * @param {boolean} [props.templateLocked] - Whether the current template type is locked.
  */
 export default function SectionToolbar({
@@ -31,13 +30,15 @@ export default function SectionToolbar({
   onCreateTemplate,
   onTemplateChange,
   onShowTemplateDetails,
-  isGenerating,
   showJsonViewer,
   hasJsonData,
-  progress,
   templateLocked,
 }) {
   const [isTemplateDropdownOpen, setIsTemplateDropdownOpen] = useState(false);
+
+  // Generation state comes from the global store so it survives tab switches
+  const isGenerating = useTemplateStore((s) => s.isGenerating);
+  const progress = useTemplateStore((s) => s.progress);
 
   const phaseText = progress?.phase || '';
   const progressPercent = progress?.progress ?? 0;
@@ -64,9 +65,9 @@ export default function SectionToolbar({
   return (
     <div className="flex flex-col px-4 py-2 border-b border-slate-200 bg-white flex-shrink-0">
       {/* Buttons row */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         {/* Left side: Template selector */}
-        <div className="flex items-center gap-3 min-w-0 flex-1">
+        <div className="flex items-center gap-3 shrink-0">
           {/* Template type selector dropdown */}
           <div className="relative" ref={dropdownRef}>
             <button
@@ -133,7 +134,7 @@ export default function SectionToolbar({
         </div>
 
         {/* Center: Current file name */}
-        <div className="flex items-center justify-center flex-1 min-w-0">
+        <div className="flex items-center justify-center shrink-0">
           <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200/80 text-xs font-semibold text-slate-700 max-w-[240px]">
             <FileText size={13} className="text-slate-500 shrink-0" />
             <span className="truncate">

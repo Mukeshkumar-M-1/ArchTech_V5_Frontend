@@ -6,22 +6,23 @@ import WorkspaceLayout from './components/layout/WorkspaceLayout';
 import SoftwareWorkspace from './views/SoftwareWorkspace';
 import RequirementListing from './views/RequirementListing';
 import MemoryManagement from './views/MemoryManagement';
+import GuidePage from './views/GuideManual/GuidePage';
 import ToastContainer from './components/ui/ToastContainer';
 
 function App() {
   const [project, setProject] = useState(() => {
     try {
-      const saved = localStorage.getItem('archtech_project');
+      const saved = sessionStorage.getItem('archtech_project');
       return saved && saved !== 'undefined' ? JSON.parse(saved) : null;
     } catch (e) {
-      console.warn("Failed to parse project from localStorage:", e);
+      console.warn("Failed to parse project from sessionStorage:", e);
       return null;
     }
   });
 
   const handleProjectCreate = (newProject) => {
     setProject(newProject);
-    localStorage.setItem('archtech_project', JSON.stringify(newProject));
+    sessionStorage.setItem('archtech_project', JSON.stringify(newProject));
   };
 
   const activeProject = project;
@@ -41,6 +42,9 @@ function App() {
           <Route path="Memory" element={<MemoryManagement project={activeProject} />} />
           <Route path="software" element={<SoftwareWorkspace project={activeProject} />} />
         </Route>
+
+        {/* Standalone Guide/Manual page */}
+        <Route path="/guide" element={<GuidePage />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

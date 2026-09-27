@@ -4,6 +4,7 @@ import {
   Paperclip,
   ArrowUp,
   Terminal,
+  AlertTriangle,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -20,13 +21,20 @@ import {
   GitFork,
   Eye,
   ScrollText,
+  Zap,
+  AtSign,
+  Sparkles,
 } from "lucide-react";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { C } from "./types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatActionMenu from "./ChatActionMenu";
-import ChatLogPanel from "./ChatLogPanel";
+import {
+  TranscriptTreeView,
+  ServerLogView,
+  LogsScrollStyle,
+} from "./LogsPanel";
 
 function CopyButton({ text, isUser }) {
   const [copied, setCopied] = useState(false);
@@ -101,32 +109,64 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
       : (interactionValue ? 1 : 0) + (interactionText.trim() ? 1 : 0);
 
   // Auto-show preview for content_edit
-  const [isPreviewActive, setIsPreviewActive] = useState(
-    msg.ui_type === "content_edit" && isAwaitingInput,
-  );
+  const [isPreviewActive, setIsPreviewActive] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
 
-  // Fire preview event on mount so TiptapEditor shows the diff immediately
-  useEffect(() => {
-    if (!isAwaitingInput || !isPreviewActive || msg.ui_type !== "content_edit")
-      return;
-    let payload = null;
+  const parseContentEditPayload = () => {
     try {
       const opts = msg.input?.options || msg.options || [];
       if (opts.length > 0)
-        payload = typeof opts[0] === "string" ? JSON.parse(opts[0]) : opts[0];
+        return typeof opts[0] === "string" ? JSON.parse(opts[0]) : opts[0];
     } catch {}
+    return null;
+  };
+
+  // Fire the editor preview when the proposal ARRIVES, not on mount. The card mounts
+  // on tool_use_start (status "executing" — isAwaitingInput still false) and only
+  // flips to "awaiting_input" when tool_interaction_request lands later; a mount-only
+  // effect ran too early and never re-ran, so TiptapEditor never received the diff.
+  // Dispatched as a *request*: GenerationPanel resolves section_filename + version to
+  // the backend-stored markdown and routes the preview to the right section.
+  useEffect(() => {
+    if (!isAwaitingInput || msg.ui_type !== "content_edit") return;
+    setIsPreviewActive(true);
+    const payload = parseContentEditPayload();
+    console.log("[Chatpanel] : ", payload);
     if (payload) {
       window.dispatchEvent(
-        new CustomEvent("preview-content-edit", {
+        new CustomEvent("content-edit-preview-request", {
           detail: {
             block_number: payload.block_number,
+            section_filename: payload.section_filename,
+            version: payload.version,
             original_text: payload.original_text,
             proposed_text: payload.proposed_text,
+            tool_call_id: msg.tool_call_id,
           },
         }),
       );
     }
-  }, []);
+  }, [isAwaitingInput, msg.ui_type, msg.tool_call_id]);
+
+  // Surface preview failures: TiptapEditor reports back when the proposal's
+  // original_text couldn't be located anywhere, so the user gets an explicit
+  // banner (and the raw -/+ diff below) instead of a silent no-op.
+  useEffect(() => {
+    if (msg.ui_type !== "content_edit") return;
+    const handleResult = (e) => {
+      if (e.detail?.tool_call_id !== msg.tool_call_id) return;
+      if (e.detail.success) {
+        setPreviewFailed(false);
+      } else {
+        setPreviewFailed(true);
+        // Editor was not modified, so reset the toggle so "Preview" can be retried.
+        setIsPreviewActive(false);
+      }
+    };
+    window.addEventListener("content-edit-preview-result", handleResult);
+    return () =>
+      window.removeEventListener("content-edit-preview-result", handleResult);
+  }, [msg.ui_type, msg.tool_call_id]);
 
   const handleInteractionSubmit = async () => {
     if (!currentSessionId || !onInteractionSubmit) return;
@@ -145,8 +185,6 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
   };
 
   let tool_name = `${msg.name}`;
-  console.log("Messages : ", msg);
-
   let tool_summary = "";
   if (isCompleted && msg.input) {
     switch (tool_name) {
@@ -167,7 +205,7 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
         break;
       }
       case "Bash": {
-        tool_summary = msg.input?.command;
+        tool_summary = msg.input?.description;
         break;
       }
       case "RequestUserInput": {
@@ -195,7 +233,7 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
           {tool_name}
         </span>
         {isCompleted && !expanded && tool_summary && (
-          <span className="text-[11px] text-slate-400 group-hover:text-slate-500">
+          <span className="text-[11px] text-slate-400 group-hover:text-slate-500 flex-1 min-w-0 truncate">
             {tool_summary}
           </span>
         )}
@@ -211,13 +249,15 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
 
       {isExpanded && (
         <div className="mt-1 bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm overflow-x-auto text-[11px] font-mono text-slate-600">
-          <div className="text-[9px] uppercase tracking-wider text-slate-400 mb-1 font-sans font-bold">
-            Parameters
-          </div>
           {isCompleted && msg.input && (
-            <pre className="whitespace-pre-wrap mb-2 text-[10px] bg-slate-50 p-2 rounded border border-slate-100">
-              {JSON.stringify(msg.input, null, 2)}
-            </pre>
+            <>
+              <div className="text-[9px] uppercase tracking-wider text-slate-400 mb-1 font-sans font-bold mt-1">
+                Input
+              </div>
+              <pre className="whitespace-pre-wrap mb-2 text-[10px] bg-slate-50 p-2 rounded border border-slate-100 max-h-48 overflow-y-auto">
+                {JSON.stringify(msg.input, null, 2)}
+              </pre>
+            </>
           )}
 
           {isCompleted && msg.output && (
@@ -525,17 +565,28 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
                         )}
 
                         <div className="flex flex-col text-[12px] font-mono leading-relaxed">
-                          <div className="bg-rose-50 text-rose-600 p-3 whitespace-pre-wrap border-b border-rose-100 relative">
-                            <div className="absolute top-1 left-2 select-none text-rose-400 font-bold">
+                          {previewFailed && (
+                            <div className="px-3 py-2 bg-amber-50 text-amber-700 text-[11px] font-sans border-b border-amber-200">
+                              Couldn't locate this block in the editor or the
+                              stored section file — the raw diff below shows the
+                              proposed change. Use Accept/Reject to decide.
+                            </div>
+                          )}
+                          <div className="bg-rose-50 text-rose-600 border-b border-rose-100 relative">
+                            <div className="absolute top-1 left-2 select-none text-rose-400 font-bold z-10">
                               -
                             </div>
-                            <div className="pl-4">{payload.original_text}</div>
+                            <div className="p-3 pl-4 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                              {payload.original_text}
+                            </div>
                           </div>
-                          <div className="bg-emerald-50 text-emerald-600 p-3 whitespace-pre-wrap relative">
-                            <div className="absolute top-1 left-2 select-none text-emerald-500 font-bold">
+                          <div className="bg-emerald-50 text-emerald-600 relative">
+                            <div className="absolute top-1 left-2 select-none text-emerald-500 font-bold z-10">
                               +
                             </div>
-                            <div className="pl-4">{payload.proposed_text}</div>
+                            <div className="p-3 pl-4 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                              {payload.proposed_text}
+                            </div>
                           </div>
                         </div>
 
@@ -544,16 +595,20 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
                             onClick={() => {
                               const isActive = !isPreviewActive;
                               setIsPreviewActive(isActive);
+                              if (isActive) setPreviewFailed(false);
                               window.dispatchEvent(
                                 new CustomEvent(
                                   isActive
-                                    ? "preview-content-edit"
+                                    ? "content-edit-preview-request"
                                     : "apply-content-edit-reject",
                                   {
                                     detail: {
                                       block_number: payload.block_number,
+                                      section_filename: payload.section_filename,
+                                      version: payload.version,
                                       original_text: payload.original_text,
                                       proposed_text: payload.proposed_text,
+                                      tool_call_id: msg.tool_call_id,
                                     },
                                   },
                                 ),
@@ -588,28 +643,24 @@ function ToolTimelineItem({ msg, onInteractionSubmit, currentSessionId }) {
                           </button>
                           <button
                             onClick={() => {
-                              onInteractionSubmit(
-                                currentSessionId,
-                                msg.tool_call_id,
-                                {
-                                  status: "accepted",
-                                  ui_type: "content_edit",
-                                  section_filename: payload.section_filename,
-                                  proposed_text: payload.proposed_text,
-                                  block_number: payload.block_number,
-                                },
-                              );
+                              // GenerationPanel persists the edit against the STORED section
+                              // markdown (same sequence as the preview modal Accept) and then
+                              // resolves the interaction — the card alone can't apply the edit
+                              // when the proposal's section isn't the one open in the editor.
                               window.dispatchEvent(
-                                new CustomEvent("apply-content-edit-accept", {
+                                new CustomEvent("card-content-edit-accept", {
                                   detail: {
+                                    tool_call_id: msg.tool_call_id,
                                     block_number: payload.block_number,
+                                    section_filename: payload.section_filename,
+                                    version: payload.version,
                                     original_text: payload.original_text,
                                     proposed_text: payload.proposed_text,
                                   },
                                 }),
                               );
                             }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-emerald-600 border border-emerald-600 rounded-md hover:bg-emerald-700 shadow-sm transition-colors"
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-emerald-600 border border-emerald-600 rounded-md hover:bg-emerald-700 shadow-sm transition-colors cursor-pointer"
                           >
                             <CheckCircle2 size={12} />
                             Accept
@@ -815,9 +866,125 @@ export default function ChatPanel({
   isAwaitingUserInput,
   project,
   onClearConversation,
+  mentionedFiles = [],
+  setMentionedFiles,
+  onMentionFile,
+  canMention = false,
+  templateType,
 }) {
   const textareaRef = useRef(null);
-  const [isLogPanelOpen, setIsLogPanelOpen] = useState(false);
+  // null = normal chat; "generation" | "chat" | "server" = inline log view
+  const [logView, setLogView] = useState(null);
+  const [logsMenuOpen, setLogsMenuOpen] = useState(false);
+  const projectId = project?.id || project?._id;
+
+  // Floating "Open Chat" button shown while text is selected inside the messages area.
+  // { text, top, left } — position is relative to the chat panel root.
+  const [selectionPopup, setSelectionPopup] = useState(null);
+  const messagesRef = useRef(null);
+
+  // Track text selection inside the messages area; show/hide the popup accordingly
+  const clearSelectionPopup = useCallback(() => setSelectionPopup(null), []);
+
+  useEffect(() => {
+    const MOUNT_DELAY_MS = 10; // let the browser settle the selection before reading it
+    const POPUP_GAP_PX = 6; // gap between the selection and the button
+
+    const handleMouseUp = () => {
+      setTimeout(() => {
+        const selection = window.getSelection();
+        const container = messagesRef.current;
+        if (!selection || selection.isCollapsed || !container) {
+          clearSelectionPopup();
+          return;
+        }
+
+        const text = selection.toString().trim();
+        const inMessages =
+          container.contains(selection.anchorNode) &&
+          container.contains(selection.focusNode);
+        if (!text || !inMessages) {
+          clearSelectionPopup();
+          return;
+        }
+
+        const range = selection.getRangeAt(0);
+        const panelRect = container.getBoundingClientRect();
+        const BUTTON_WIDTH_PX = 100; // approx width, used to clamp inside the panel
+        const BUTTON_HEIGHT_PX = 34; // approx height, keeps the button inside the panel
+
+        // Use the last line's rect: the range's bounding rect is a union across
+        // blocks/tables, which would misplace the button for multi-block selections.
+        const lineRects = Array.from(range.getClientRects()).filter(
+          (r) => r.width > 0 && r.height > 0,
+        );
+        const lastLineRect =
+          lineRects.length > 0
+            ? lineRects[lineRects.length - 1]
+            : range.getBoundingClientRect();
+
+        setSelectionPopup({
+          text,
+          // place the button just below the last selected line, clamped to stay visible
+          top: Math.min(
+            lastLineRect.bottom - panelRect.top + POPUP_GAP_PX,
+            panelRect.height - BUTTON_HEIGHT_PX,
+          ),
+          // align the button's left edge with the start of the last selected line
+          left: Math.max(
+            8,
+            Math.min(
+              lastLineRect.left - panelRect.left,
+              panelRect.width - BUTTON_WIDTH_PX - 8,
+            ),
+          ),
+        });
+      }, MOUNT_DELAY_MS);
+    };
+
+    const handleSelectionChange = () => {
+      if (window.getSelection()?.isCollapsed) clearSelectionPopup();
+    };
+
+    document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, []);
+
+  // Auto-scroll to the latest message only while the bot is streaming
+  useEffect(() => {
+    if (!isStreaming) return;
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, isStreaming]);
+
+  // Attach the selected chat text as a context block for the AI
+  const handleAddSelectionToContext = () => {
+    if (!setSelectedChatBlocks || !selectionPopup) return;
+    const text = selectionPopup.text;
+    setSelectedChatBlocks((prev) => [
+      ...prev,
+      {
+        text,
+        markdown: text,
+        blockNumber: prev.length + 1,
+        preview: text.slice(0, 80),
+      },
+    ]);
+    setSelectionPopup(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const LOG_VIEW_OPTIONS = [
+    { id: null, label: "Messages", icon: <Bot size={12} /> },
+    { id: "generation", label: "Generation Logs", icon: <Zap size={12} /> },
+    { id: "chat", label: "Chat Logs", icon: <MessageSquare size={12} /> },
+    { id: "server", label: "Server Logs", icon: <Terminal size={12} /> },
+  ];
+  const activeLogLabel = LOG_VIEW_OPTIONS.find((o) => o.id === logView)?.label;
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -831,15 +998,31 @@ export default function ChatPanel({
     }
   }, [input]);
 
-  useEffect(() => {
-    console.log("Selected blocks: ", selectedChatBlocks);
-  }, [selectedChatBlocks]);
 
   return (
     <div
       className="border-l border-slate-200 bg-[#f8fafc] flex-shrink-0 flex flex-col animate-[fadeIn_0.2s_ease] relative z-20 font-sans"
       style={{ width: `${width}px` }}
     >
+      {/* Floating button shown while text is selected in the messages area */}
+      {selectionPopup && (
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={handleAddSelectionToContext}
+          style={{
+            position: "absolute",
+            top: selectionPopup.top,
+            left: selectionPopup.left,
+            zIndex: 30,
+          }}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 text-white text-[11px] font-semibold rounded-lg shadow-lg hover:bg-slate-700 transition-colors cursor-pointer"
+          title="Add the selected text as context for the AI"
+        >
+          <Sparkles size={12} />
+          Open Chat
+        </button>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 flex-shrink-0 bg-[#f8fafc] z-10 sticky top-0 shadow-sm">
         <div className="flex items-center gap-3">
@@ -847,24 +1030,56 @@ export default function ChatPanel({
             <Bot size={16} />
           </div>
           <div>
-            <div className="text-sm font-bold text-slate-800">ArchTech AI</div>
+            <div className="text-sm font-bold text-slate-800">SDG AI</div>
             <div className="text-[10px] font-semibold text-slate-400 tracking-wider uppercase mt-0.5">
               {messages.length} messages
             </div>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => setIsLogPanelOpen((open) => !open)}
-            className={`border-none cursor-pointer p-1.5 rounded-md flex items-center transition-all duration-200 ${
-              isLogPanelOpen
-                ? "text-accent bg-primary-100 hover:bg-primary-100/40"
-                : "text-slate-400 hover:text-slate-700 hover:bg-slate-200"
-            }`}
-            title="Session log"
-          >
-            <ScrollText size={14} />
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setLogsMenuOpen((open) => !open)}
+              className={`border-none cursor-pointer p-1.5 rounded-md flex items-center transition-all duration-200 ${
+                logView || logsMenuOpen
+                  ? "text-accent bg-primary-100 hover:bg-primary-100/40"
+                  : "text-slate-400 hover:text-slate-700 hover:bg-slate-200"
+              }`}
+              title="Logs"
+            >
+              <ScrollText size={14} />
+            </button>
+            {logsMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-20"
+                  onClick={() => setLogsMenuOpen(false)}
+                />
+                <div className="absolute right-0 top-full mt-1.5 w-44 bg-white border border-slate-200 rounded-lg shadow-lg py-1 z-30">
+                  {LOG_VIEW_OPTIONS.map((option) => (
+                    <button
+                      key={option.label}
+                      onClick={() => {
+                        setLogView(option.id);
+                        setLogsMenuOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-[12px] cursor-pointer transition-colors ${
+                        logView === option.id
+                          ? "text-primary-700 bg-primary-50 font-semibold"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="text-slate-400">{option.icon}</span>
+                      {option.label}
+                      {logView === option.id && (
+                        <Check size={12} className="ml-auto text-primary-600" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="border-none bg-transparent cursor-pointer p-1.5 rounded-md text-slate-400 flex items-center hover:text-slate-700 hover:bg-slate-200 transition-all duration-200"
@@ -874,16 +1089,38 @@ export default function ChatPanel({
         </div>
       </div>
 
-      {isLogPanelOpen ? (
-        <ChatLogPanel messages={messages} isStreaming={isStreaming} />
+      {logView ? (
+        <div className="flex-1 flex flex-col overflow-hidden min-h-0 bg-white">
+          <LogsScrollStyle />
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200/60 bg-slate-50/80 flex-shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              {activeLogLabel}
+            </span>
+            <button
+              onClick={() => setLogView(null)}
+              className="border-none bg-transparent cursor-pointer p-1 rounded-md text-slate-400 flex items-center hover:text-slate-700 hover:bg-slate-200 transition-all duration-200"
+              title="Back to chat"
+            >
+              <X size={13} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-hidden min-h-0">
+            {logView === "server" ? (
+              <ServerLogView />
+            ) : (
+              <TranscriptTreeView projectId={projectId} kind={logView} />
+            )}
+          </div>
+        </div>
       ) : (
         <>
           {/* Messages UI */}
           <div
             ref={(el) => {
-              if (el) el.scrollTop = el.scrollHeight;
+              messagesRef.current = el;
             }}
             className="flex-1 overflow-y-auto px-4 py-6 scroll-smooth bg-[#f8fafc]"
+            onScroll={clearSelectionPopup}
           >
             {messages.map((msg, i) => {
               const isLast = i === messages.length - 1;
@@ -895,6 +1132,35 @@ export default function ChatPanel({
                 return (
                   <div key={i} className="mb-8 mt-2 w-full flex justify-start">
                     <div className="bg-white rounded-xl px-4 py-3 text-slate-800 text-[13px] border border-slate-200 flex flex-col w-full shadow-sm text-left">
+                      {msg.mentions && msg.mentions.length > 0 && (
+                        <div className="mb-3 flex flex-wrap gap-1.5 pb-3 border-b border-slate-100">
+                          {msg.mentions.map((mention, idx) => (
+                            <div
+                              key={idx}
+                              className="flex items-center gap-1.5 bg-violet-50 text-violet-700 pl-1.5 pr-2 py-1 rounded-md text-[11px] font-medium border border-violet-200 shadow-sm"
+                              title={mention.section_filename}
+                            >
+                              <AtSign
+                                size={12}
+                                className="shrink-0 text-violet-500"
+                              />
+                              {mention.version != null && (
+                                <span className="shrink-0 bg-violet-200/70 text-violet-800 px-1 py-px rounded text-[10px] font-bold">
+                                  v{mention.version}
+                                </span>
+                              )}
+                              <span className="max-w-[160px] truncate">
+                                {mention.label
+                                  ? mention.label.replace(/^v\d+\s*-\s*/, "")
+                                  : mention.section_filename?.replace(
+                                      /\.md$/,
+                                      "",
+                                    )}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {msg.contextBlocks && msg.contextBlocks.length > 0 && (
                         <div className="mb-3 flex flex-wrap gap-1.5 pb-3 border-b border-slate-100">
                           {msg.contextBlocks.map((block, idx) => (
@@ -922,9 +1188,75 @@ export default function ChatPanel({
                       <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t border-slate-100">
                         <ReuseBlocksButton
                           blocks={msg.contextBlocks}
-                          onSelect={() =>
-                            setSelectedChatBlocks(msg.contextBlocks)
-                          }
+                          onSelect={() => {
+                            const messageBlocks = msg.contextBlocks || [];
+                            // Append the message's blocks to the current input
+                            // selection, renumbering to continue the existing sequence
+                            if (messageBlocks.length > 0) {
+                              setSelectedChatBlocks(
+                                (currentlySelectedBlocks) => {
+                                  const alreadySelectedTexts = new Set(
+                                    currentlySelectedBlocks.map(
+                                      (selectedBlock) => selectedBlock.text,
+                                    ),
+                                  );
+                                  const newBlocksToAppend = messageBlocks
+                                    .filter(
+                                      (messageBlock) =>
+                                        !alreadySelectedTexts.has(
+                                          messageBlock.text,
+                                        ),
+                                    )
+                                    .map((messageBlock, appendIndex) => ({
+                                      ...messageBlock,
+                                      blockNumber:
+                                        currentlySelectedBlocks.length +
+                                        appendIndex +
+                                        1,
+                                    }));
+                                  return [
+                                    ...currentlySelectedBlocks,
+                                    ...newBlocksToAppend,
+                                  ];
+                                },
+                              );
+                            }
+
+                            // Restore the message's mentioned files back into
+                            // the input chips, skipping ones already mentioned
+                            const messageMentions = msg.mentions || [];
+                            if (messageMentions.length > 0 && setMentionedFiles) {
+                              setMentionedFiles(
+                                (currentlyMentionedFiles) => {
+                                  const alreadyMentionedFilenames = new Set(
+                                    currentlyMentionedFiles.map(
+                                      (mentionedFile) =>
+                                        mentionedFile.sectionFilename,
+                                    ),
+                                  );
+                                  const newMentionsToAppend = messageMentions
+                                    .filter(
+                                      (messageMention) =>
+                                        !alreadyMentionedFilenames.has(
+                                          messageMention.section_filename,
+                                        ),
+                                    )
+                                    .map((messageMention) => ({
+                                      sectionFilename:
+                                        messageMention.section_filename,
+                                      version: messageMention.version,
+                                      label:
+                                        messageMention.label ||
+                                        `v${messageMention.version} - ${messageMention.section_filename?.replace(/\.md$/, "")}`,
+                                    }));
+                                  return [
+                                    ...currentlyMentionedFiles,
+                                    ...newMentionsToAppend,
+                                  ];
+                                },
+                              );
+                            }
+                          }}
                         />
                         <div className="w-px h-4 bg-slate-200"></div>
                         <CopyButton text={msg.content} isUser={true} />
@@ -948,6 +1280,28 @@ export default function ChatPanel({
                       <div className="flex justify-end mt-2">
                         <CopyButton text={msg.content} isUser={false} />
                       </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (msg.kind === "llm_retry") {
+                // LLM retry/backoff notice — not a tool, rendered as a compact
+                // amber line on the timeline so the wait is visible.
+                return (
+                  <div key={i} className="relative pl-7 pb-4">
+                    {showLine && (
+                      <div className="absolute left-[11px] top-3 bottom-[-10px] w-[2px] bg-slate-200 rounded-full"></div>
+                    )}
+                    <div className="absolute left-[7.5px] top-1.5 w-2.5 h-2.5 rounded-full z-10 ring-4 bg-amber-500 ring-[#f8fafc]"></div>
+                    <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5">
+                      <AlertTriangle size={12} className="text-amber-600 shrink-0" />
+                      <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">
+                        LLM retry
+                      </span>
+                      <span className="text-[10px] font-mono text-amber-700">
+                        {msg.model} · {msg.reason} · attempt {msg.attempt}/{msg.maxAttempts} · waiting {msg.waitSeconds}s
+                      </span>
                     </div>
                   </div>
                 );
@@ -1047,6 +1401,32 @@ export default function ChatPanel({
           {/* Input UI*/}
           <div className="p-4 bg-gradient-to-t from-[#f8fafc] via-[#f8fafc] to-transparent z-10 sticky bottom-0 pt-8">
             <div className="relative bg-white border border-slate-200 rounded-xl shadow-sm flex flex-col transition-all focus-within:border-slate-300 focus-within:ring-4 focus-within:ring-slate-100">
+              {/* Mentioned files chip list */}
+              {mentionedFiles && mentionedFiles.length > 0 && (
+                <div className="px-3 pt-2 pb-1 flex flex-wrap gap-1.5 max-h-24 overflow-y-auto scrollbar-thin [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-200 [&::-webkit-scrollbar-thumb]:rounded-full">
+                  {mentionedFiles.map((mention) => (
+                    <div
+                      key={mention.sectionFilename}
+                      className="flex items-center gap-1.5 bg-violet-50 text-violet-700 pl-1.5 pr-1.5 py-1 rounded-md text-[11px] font-medium border border-violet-200 shadow-sm"
+                      title={mention.label}
+                    >
+                      <AtSign size={12} className="shrink-0 text-violet-500" />
+                      <span className="max-w-[160px] truncate">{mention.label}</span>
+                      <button
+                        onClick={() =>
+                          setMentionedFiles((prev) =>
+                            prev.filter((m) => m.sectionFilename !== mention.sectionFilename),
+                          )
+                        }
+                        className="text-violet-400 hover:text-rose-500 ml-0.5"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Selected Block input list */}
               {selectedChatBlocks && selectedChatBlocks.length > 0 && (
                 <div className="px-3 pt-2 pb-1 flex flex-wrap gap-1.5 max-h-24 overflow-y-auto scrollbar-thin [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-200 [&::-webkit-scrollbar-thumb]:rounded-full">
@@ -1089,7 +1469,7 @@ export default function ChatPanel({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    if (input.trim()) onSend();
+                    if (input.trim()) onSend(templateType);
                   }
                 }}
                 placeholder={
@@ -1099,7 +1479,8 @@ export default function ChatPanel({
                 }
                 disabled={isAwaitingUserInput}
                 className={`w-full bg-transparent text-[13px] text-slate-800 placeholder-slate-400 py-3 px-3.5 outline-none resize-none max-h-48 leading-relaxed font-sans ${
-                  selectedChatBlocks && selectedChatBlocks.length > 0
+                  (selectedChatBlocks && selectedChatBlocks.length > 0) ||
+                  (mentionedFiles && mentionedFiles.length > 0)
                     ? "border-t border-slate-100"
                     : ""
                 }`}
@@ -1112,6 +1493,8 @@ export default function ChatPanel({
                   <ChatActionMenu
                     project={project}
                     onClearConversation={onClearConversation}
+                    onMentionFile={onMentionFile}
+                    canMention={canMention}
                   />
 
                   <div className="w-px h-4 bg-slate-200"></div>
@@ -1134,7 +1517,7 @@ export default function ChatPanel({
                     </button>
                   ) : (
                     <button
-                      onClick={onSend}
+                      onClick={() => onSend(templateType)}
                       disabled={!input.trim()}
                       className={`p-1.5 rounded-lg transition-colors shadow-sm flex items-center justify-center ${
                         input.trim()

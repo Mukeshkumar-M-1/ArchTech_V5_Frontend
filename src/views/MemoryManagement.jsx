@@ -20,17 +20,21 @@ import {
   Hash,
   ChevronRight,
   Ban,
+  Database,
 } from 'lucide-react';
 import {
   fetchKnowledgeFiles,
   fetchUploadedFiles,
   fetchKnowledgeFileContent,
   fetchMemoryProgress,
+  checkRequirements,
   generateMemory,
   cancelMemory,
   clearMemory,
 } from '../api/memoryApi';
 import useKnowledgeStore from '../store/knowledgeStore';
+import useToastStore from '../store/toastStore';
+import { motion } from 'framer-motion';
 
 export default function MemoryManagement({ project }) {
   const {
@@ -62,6 +66,10 @@ export default function MemoryManagement({ project }) {
   const [builtUploadedFilesTree, setBuiltUploadedFilesTree] = useState(null);
   const [clearing, setClearing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [pendingCancel, setPendingCancel] = useState(false);
+  const [pendingClear, setPendingClear] = useState(false);
+  const [checkingRequirements, setCheckingRequirements] = useState(false);
+  const { addToast } = useToastStore();
 
   // ─── Tree Builder ────────────────────────────────────────────────────────
   const treeStructure = useMemo(() => {
@@ -287,6 +295,15 @@ export default function MemoryManagement({ project }) {
     return () => clearInterval(interval);
   }, [project?.id, memoryProgress?.status, refreshFiles]);
 
+  // ─── Auto-dismiss "complete" badge ────────────────────────────────────────
+  // memoryProgress lives in the shared store and is never reset by the
+  // backend after completion, so clear it here or the success badge lingers.
+  useEffect(() => {
+    if (memoryProgress?.status !== 'complete') return;
+    const dismissTimer = setTimeout(() => setMemoryProgress(null), 5000);
+    return () => clearTimeout(dismissTimer);
+  }, [memoryProgress?.status, setMemoryProgress]);
+
   // ─── Handlers ────────────────────────────────────────────────────────────
   const toggleFolder = useCallback((folderName) => {
     setExpandedFolders((prev) => {
@@ -336,6 +353,58 @@ export default function MemoryManagement({ project }) {
       setSaving(false);
     }
   }, [selectedFilePath, project?.id, editingContent]);
+
+  // ─── Generate Memory (with requirements pre-check) ────────────────────────
+  const handleGenerateMemory = useCallback(async () => {
+    setCheckingRequirements(true);
+    try {
+      const requirementsCheckResult = await checkRequirements(project.id);
+      if (!requirementsCheckResult.present) {
+        addToast(
+          'No requirements found. Please extract requirements before generating memory.',
+          'error'
+        );
+        return;
+      }
+      addToast(
+        `Found ${requirementsCheckResult.count} requirements — starting memory generation`,
+        'success'
+      );
+      await generateMemory(project.id);
+      setMemoryProgress({
+        status: 'running',
+        progress: 0,
+        phase: 'Generating...',
+      });
+      setCancelling(false);
+    } catch (err) {
+      addToast(`Failed to start memory generation: ${err.message}`, 'error');
+      setMemoryProgress({ status: 'error', error: err.message });
+    } finally {
+      setCheckingRequirements(false);
+    }
+  }, [project?.id, addToast, setMemoryProgress]);
+
+  // ─── Cancel Memory Generation (with confirmation) ─────────────────────────
+  const confirmCancel = useCallback(async () => {
+    setPendingCancel(false);
+    setCancelling(true);
+    try {
+      await cancelMemory(project.id);
+      setMemoryProgress({
+        status: 'cancelled',
+        progress: memoryProgress?.progress,
+        phase: 'Cancelled',
+      });
+    } catch {
+      setMemoryProgress({
+        status: 'error',
+        error: 'Failed to cancel',
+      });
+    } finally {
+      setCancelling(false);
+    }
+  }, [project?.id, memoryProgress?.progress, setMemoryProgress]);
 
   // ─── Strip YAML frontmatter only ─────────────────────────────────────────
   const stripFrontmatter = useCallback((content) => {
@@ -471,7 +540,7 @@ export default function MemoryManagement({ project }) {
               placeholder="Search files..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-3 py-2 text-[13px] font-medium border border-white/60 rounded-xl bg-white/50 text-slate-700 outline-none transition-all shadow-sm focus:border-primary-400 focus:bg-white focus:ring-4 focus:ring-primary-500/10 placeholder:text-slate-400"
+              className="w-full pl-10 pr-3 py-2 text-[13px] font-medium border border-slate-200 rounded-xl bg-white text-slate-700 outline-none transition-all shadow-sm hover:border-slate-300 focus:border-primary-400 focus:ring-4 focus:ring-primary-500/10 placeholder:text-slate-400"
             />
           </div>
         </div>
@@ -527,7 +596,8 @@ export default function MemoryManagement({ project }) {
       <div className="flex-1 flex flex-col overflow-hidden min-w-0 border-l border-slate-200">
         {/* ── Topbar ── */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white flex-shrink-0 gap-3">
-          <h2 className="text-[13px] font-bold text-slate-900 tracking-tight m-0">
+          <h2 className="flex items-center gap-2 text-[13px] font-bold text-slate-900 tracking-tight m-0">
+            <Database size={14} className="text-primary-500" />
             Memory Management
           </h2>
 
@@ -552,27 +622,15 @@ export default function MemoryManagement({ project }) {
           <div className="flex items-center gap-2">
             {/* Generate Memory Button */}
             <button
-              onClick={async () => {
-                try {
-                  await generateMemory(project.id);
-                  setMemoryProgress({
-                    status: 'running',
-                    progress: 0,
-                    phase: 'Generating...',
-                  });
-                  setCancelling(false);
-                } catch (err) {
-                  setMemoryProgress({ status: 'error', error: err.message });
-                }
-              }}
+              onClick={handleGenerateMemory}
               className={`flex items-center gap-1.5 px-3.5 py-[6px] border-none rounded-lg text-[11px] font-semibold text-white transition-all ${
                 memoryProgress?.status === 'running'
                   ? 'bg-primary-100 cursor-not-allowed'
                   : 'bg-primary-600 hover:bg-primary-700'
               }`}
-              disabled={memoryProgress?.status === 'running'}
+              disabled={memoryProgress?.status === 'running' || checkingRequirements}
             >
-              <Play size={12} />
+              {checkingRequirements ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
               Generate Memory
             </button>
 
@@ -588,24 +646,7 @@ export default function MemoryManagement({ project }) {
                   </span>
                 </div>
                 <button
-                  onClick={async () => {
-                    setCancelling(true);
-                    try {
-                      await cancelMemory(project.id);
-                      setMemoryProgress({
-                        status: 'cancelled',
-                        progress: memoryProgress.progress,
-                        phase: 'Cancelled',
-                      });
-                    } catch {
-                      setMemoryProgress({
-                        status: 'error',
-                        error: 'Failed to cancel',
-                      });
-                    } finally {
-                      setCancelling(false);
-                    }
-                  }}
+                  onClick={() => setPendingCancel(true)}
                   disabled={cancelling}
                   className="flex items-center gap-1.5 px-3.5 py-[6px] border-none rounded-lg text-[11px] font-semibold text-white transition-all bg-red-600 hover:bg-red-700 disabled:opacity-50"
                 >
@@ -643,26 +684,13 @@ export default function MemoryManagement({ project }) {
             )}
 
             <div className="w-px h-[18px] bg-slate-200" />
-            
-            {/* Clear Memory Button */}
+
+            {/* Clear Memory Button — only usable when knowledge files exist */}
             <button
-              onClick={async () => {
-                if (!window.confirm('Delete all memory files? This cannot be undone.')) return;
-                setClearing(true);
-                try {
-                  await clearMemory(project.id);
-                  await refreshFiles();
-                } catch (err) {
-                  alert('Failed to clear memory: ' + err.message);
-                } finally {
-                  setClearing(false);
-                  setSelectedFilePath(null);
-                  setFileContent('');
-                }
-              }}
-              disabled={clearing || memoryProgress?.status === 'running'}
-              className={`flex items-center gap-1.5 px-3.5 py-[6px] border-none rounded-lg text-[11px] font-semibold text-white transition-all bg-orange-600 hover:bg-orange-700 ${
-                clearing || memoryProgress?.status === 'running'
+              onClick={() => setPendingClear(true)}
+              disabled={clearing || memoryProgress?.status === 'running' || !memoryFiles?.length}
+              className={`flex items-center gap-1.5 px-3.5 py-[6px] border-none rounded-lg text-[11px] font-semibold text-white transition-all bg-red-600 hover:bg-red-700 ${
+                clearing || memoryProgress?.status === 'running' || !memoryFiles?.length
                   ? 'opacity-50 cursor-not-allowed'
                   : 'opacity-100 cursor-pointer'
               }`}
@@ -682,7 +710,8 @@ export default function MemoryManagement({ project }) {
                 {/* Editor Subheader */}
                 <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white flex-shrink-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-400 font-mono">
+                    <FileText size={13} className="text-slate-500" />
+                    <span className="text-[12px] font-semibold text-slate-700 font-mono">
                       {selectedFilePath.split('/').pop()}
                     </span>
                     {saved && (
@@ -801,6 +830,99 @@ export default function MemoryManagement({ project }) {
           </div>
         </div>
       </div>
+
+      {/* ── Cancel Generation Confirmation Dialog ─────────────────────────── */}
+      {pendingCancel && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-md overflow-hidden"
+          >
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center shadow-lg shadow-red-200/50">
+                <Ban size={28} className="text-white" />
+              </div>
+
+              <h3 className="text-xl font-black text-slate-900 mb-2">Cancel Generation?</h3>
+              <p className="text-sm text-slate-500 mb-1">
+                Memory generation is currently in progress.
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Cancelling will stop the process and progress made so far may be lost.
+              </p>
+            </div>
+
+            <div className="px-8 pb-8 flex items-center gap-3">
+              <button
+                onClick={() => setPendingCancel(false)}
+                className="flex-1 px-5 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest rounded-2xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+              >
+                Keep Generating
+              </button>
+              <button
+                onClick={confirmCancel}
+                className="flex-1 px-5 py-3 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-red-200/50 hover:shadow-red-300/50 active:scale-95"
+              >
+                Yes, Cancel
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* ── Clear Memory Confirmation Dialog ──────────────────────────────── */}
+      {pendingClear && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-md overflow-hidden"
+          >
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center shadow-lg shadow-red-200/50">
+                <Trash2 size={28} className="text-white" />
+              </div>
+
+              <h3 className="text-xl font-black text-slate-900 mb-2">Clear Memory?</h3>
+              <p className="text-sm text-slate-500 mb-1">
+                All memory files will be permanently deleted.
+              </p>
+              <p className="text-[11px] text-slate-400">
+                This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="px-8 pb-8 flex items-center gap-3">
+              <button
+                onClick={() => setPendingClear(false)}
+                className="flex-1 px-5 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest rounded-2xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setPendingClear(false);
+                  setClearing(true);
+                  try {
+                    await clearMemory(project.id);
+                    await refreshFiles();
+                  } catch (err) {
+                    alert('Failed to clear memory: ' + err.message);
+                  } finally {
+                    setClearing(false);
+                    setSelectedFilePath(null);
+                    setFileContent('');
+                  }
+                }}
+                className="flex-1 px-5 py-3 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-red-200/50 hover:shadow-red-300/50 active:scale-95"
+              >
+                Yes, Delete All
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* ── Full Screen Modal ─────────────────────────────────────────────── */}
       {fullScreen && (

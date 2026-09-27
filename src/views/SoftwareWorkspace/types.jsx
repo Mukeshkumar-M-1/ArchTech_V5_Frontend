@@ -1,5 +1,5 @@
 // ─── Tab Definitions ─────────────────────────────────────────────────────────
-import { BookOpen, ShieldCheck, FileText, Zap, History } from 'lucide-react';
+import { BookOpen, ShieldCheck, FileText, Zap, History, ScrollText } from 'lucide-react';
 
 export const TABS = [
   { id: 'srs', label: 'SRS Document', icon: <BookOpen size={13} /> },
@@ -10,6 +10,7 @@ export const SUB_TABS = [
   { id: 'document-template', label: 'Document Template', icon: <FileText size={13} /> },
   { id: 'document-generation', label: 'Document Generation', icon: <Zap size={13} /> },
   { id: 'document-versions', label: 'Version Management', icon: <History size={13} /> },
+  { id: 'logs', label: 'Logs', icon: <ScrollText size={13} /> },
 ];
 
 // ─── Color Tokens ────────────────────────────────────────────────────────────

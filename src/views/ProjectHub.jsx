@@ -78,7 +78,14 @@ export default function ProjectHub({ project }) {
              Project Dashboard Active
            </div>
            <h1 className="text-4xl font-extrabold text-slate-900 tracking-tight">{project?.name || 'Gateway Node B'}</h1>
-           <p className="text-slate-400 font-bold text-sm mt-1 uppercase tracking-widest">{project?.id || 'ARCH-2026-X1'}</p>
+           <div className="flex items-center gap-2 mt-1">
+             <p className="text-slate-400 font-bold text-sm uppercase tracking-widest">{project?.id || 'ARCH-2026-X1'}</p>
+             {project?.productId && (
+               <span className="text-[10px] font-black uppercase tracking-wider text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
+                 {project.productId}
+               </span>
+             )}
+           </div>
         </div>
         
         <div className="flex gap-4">

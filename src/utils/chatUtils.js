@@ -5,34 +5,38 @@ export const handleChatSend = async ({
   isStreaming,
   isAwaitingUserInput,
   selectedChatBlocks,
+  mentionedFiles = [],
   currentSessionId,
   activeProject,
+  template_type,
   abortControllerRef,
   setChatInput,
   setChatMessages,
   setIsStreaming,
   setSelectedChatBlocks,
+  setMentionedFiles,
   setCurrentSessionId,
   setIsAwaitingUserInput,
   setPendingToolCallId,
+  onSessionCreated,
 }) => {
   if (!chatInput.trim() || isStreaming || isAwaitingUserInput) return;
   const projectId = activeProject?.id || null;
-  const sessionId = activeProject?.id || null;
   const userMsg = chatInput.trim();
   setChatInput("");
   const contextBlocksToPass = selectedChatBlocks.length > 0 ? selectedChatBlocks : null;
   if (selectedChatBlocks.length > 0) {
     setSelectedChatBlocks([]);
   }
-
-  setChatMessages((prevMessages) => [...prevMessages, { role: "user", content: userMsg, contextBlocks: contextBlocksToPass }]);
-  setIsStreaming(true);
-
-  // Create session if needed
-  if (!currentSessionId) {
-    setCurrentSessionId(sessionId);
+  const mentionsToPass = mentionedFiles.length > 0
+    ? mentionedFiles.map((m) => ({ section_filename: m.sectionFilename, version: m.version, label: m.label }))
+    : null;
+  if (mentionedFiles.length > 0 && setMentionedFiles) {
+    setMentionedFiles([]);
   }
+
+  setChatMessages((prevMessages) => [...prevMessages, { role: "user", content: userMsg, contextBlocks: contextBlocksToPass, mentions: mentionsToPass }]);
+  setIsStreaming(true);
 
   const abortController = new AbortController();
   abortControllerRef.current = abortController;
@@ -42,15 +46,17 @@ export const handleChatSend = async ({
       message: userMsg,
       session_id: currentSessionId,
       project_id: projectId,
+      template_type,
       signal: abortController.signal,
       contextBlocks: contextBlocksToPass,
+      mentions: mentionsToPass,
     });
     for await (const event of stream) {
-      console.log("[ChatSSE] event:", event.type, event.tool_call_id || "");
       const { type, content } = event;
 
       if (type === "session_created") {
         setCurrentSessionId(event.session_id);
+        onSessionCreated?.(event.session_id);
       } else if (type === "text_delta") {
         setChatMessages((prevMessages) => {
           const lastMessage = prevMessages[prevMessages.length - 1];
@@ -70,7 +76,6 @@ export const handleChatSend = async ({
           const updatedMessages = [...prevMessages];
           const lastMessage = updatedMessages[updatedMessages.length - 1];
           if (lastMessage?.role === "bot" && lastMessage._streaming) {
-            // Close the streaming bot text before starting a tool execution
             updatedMessages[updatedMessages.length - 1] = {
               ...lastMessage,
               _streaming: false,
@@ -103,6 +108,19 @@ export const handleChatSend = async ({
               : msg,
           ),
         );
+      } else if (type === "llm_retry") {
+        setChatMessages((prevMessages) => [
+          ...prevMessages,
+          {
+            role: "notice",
+            kind: "llm_retry",
+            model: event.model,
+            reason: event.reason,
+            attempt: event.attempt,
+            maxAttempts: event.max_attempts,
+            waitSeconds: event.wait_seconds,
+          },
+        ]);
       } else if (type === "tool_interaction_request") {
         setChatMessages((prevMessages) =>
           prevMessages.map((msg) =>

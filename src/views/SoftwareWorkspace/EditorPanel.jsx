@@ -3,6 +3,7 @@ import { SUB_TABS } from './types';
 import TemplatePanel from './TemplatePanel';
 import GenerationPanel from './GenerationPanel';
 import VersionPanel from './VersionPanel';
+import LogsPanel from './LogsPanel';
 
 /**
  * EditorPanel - Routes to either the TemplatePanel (for editing) or GenerationPanel (for viewing).
@@ -33,7 +34,8 @@ export default function EditorPanel({
   activeMainTab, subTab, onSubTabChange,
   isFullscreen, onFullscreenToggle, onGenerate, isGenActive, srsDoc, setSrsDoc, onCancel, onGenerationComplete,
   project, selectedChatBlocks, setSelectedChatBlocks, focusedChatBlock, setFocusedChatBlock,
-  chatMessages, onInteractionSubmit, currentSessionId, isAwaitingUserInput, onAwaitingUserInputChange, pendingToolCallId, setPendingToolCallId
+  chatMessages, onInteractionSubmit, currentSessionId, isAwaitingUserInput, onAwaitingUserInputChange, pendingToolCallId, setPendingToolCallId,
+  onActiveSectionContextChange, mentionedFiles, setMentionedFiles
 }) {
   const isSdd = activeMainTab === 'sdd';
 
@@ -79,6 +81,8 @@ export default function EditorPanel({
             />
           ) : subTab === 'document-versions' ? (
             <VersionPanel project={project} />
+          ) : subTab === 'logs' ? (
+            <LogsPanel project={project} />
           ) : (
             <GenerationPanel
               srsDoc={srsDoc}
@@ -99,6 +103,9 @@ export default function EditorPanel({
               onAwaitingUserInputChange={onAwaitingUserInputChange}
               pendingToolCallId={pendingToolCallId}
               setPendingToolCallId={setPendingToolCallId}
+              onActiveSectionContextChange={onActiveSectionContextChange}
+              mentionedFiles={mentionedFiles}
+              setMentionedFiles={setMentionedFiles}
             />
           )}
         </div>

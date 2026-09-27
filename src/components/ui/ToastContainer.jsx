@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X, Copy, Check } from 'lucide-react';
 import useToastStore from '../../store/toastStore';
+import { copyTextToClipboard } from '../../utils/clipboard';
 
 const icons = {
   success: <CheckCircle2 className="text-emerald-500" size={20} />,
@@ -14,6 +15,30 @@ const bgColors = {
   error: 'bg-rose-50 border-rose-100',
   info: 'bg-blue-50 border-blue-100'
 };
+
+function CopyButton({ message }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await copyTextToClipboard(message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      console.error('Failed to copy toast message');
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="text-slate-400 hover:text-slate-600 transition-colors p-1"
+      title="Copy message"
+    >
+      {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+    </button>
+  );
+}
 
 export default function ToastContainer() {
   const { toasts, removeToast } = useToastStore();
@@ -37,12 +62,15 @@ export default function ToastContainer() {
                 {toast.message}
               </p>
             </div>
-            <button
-              onClick={() => removeToast(toast.id)}
-              className="shrink-0 text-slate-400 hover:text-slate-600 transition-colors p-1"
-            >
-              <X size={14} />
-            </button>
+            <div className="shrink-0 flex items-center gap-0.5">
+              <CopyButton message={toast.message} />
+              <button
+                onClick={() => removeToast(toast.id)}
+                className="text-slate-400 hover:text-slate-600 transition-colors p-1"
+              >
+                <X size={14} />
+              </button>
+            </div>
           </motion.div>
         ))}
       </AnimatePresence>

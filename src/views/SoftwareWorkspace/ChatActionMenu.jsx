@@ -8,6 +8,7 @@ import {
   Loader2
 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
+import { motion } from "framer-motion";
 import {
   fetchProjectSettings,
   fetchAvailableModels,
@@ -16,7 +17,7 @@ import {
 import useToastStore from "../../store/toastStore";
 
 const ACTION_MENU_CONTEXT_ITEMS = [
-  { id: "attach-file", icon: Paperclip, label: "Attach file...", stubName: "Attach file" },
+  // { id: "attach-file", icon: Paperclip, label: "Attach file...", stubName: "Attach file" },
   { id: "mention-file", icon: AtSign, label: "Mention file from this project...", stubName: "Mention file" },
   { id: "clear-conversation", icon: Eraser, label: "Clear conversation" }
 ];
@@ -38,7 +39,7 @@ function ActionMenuItem({ icon: MenuItemIcon, label, onClick, right, disabled })
   );
 }
 
-export default function ChatActionMenu({ project, onClearConversation }) {
+export default function ChatActionMenu({ project, onClearConversation, onMentionFile, canMention }) {
   const projectId = project?.id || project?._id;
   const addToast = useToastStore((state) => state.addToast);
   const actionMenuRef = useRef(null);
@@ -46,6 +47,7 @@ export default function ChatActionMenu({ project, onClearConversation }) {
   const actionMenuSettingsRef = useRef({});
 
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const [pendingClear, setPendingClear] = useState(false);
   const [actionMenuModels, setActionMenuModels] = useState([]);
   const [actionMenuSelectedModel, setActionMenuSelectedModel] = useState("");
   const [isActionMenuLoadingModels, setIsActionMenuLoadingModels] = useState(false);
@@ -82,7 +84,12 @@ export default function ChatActionMenu({ project, onClearConversation }) {
   };
 
   const handleClearConversation = () => {
-    onClearConversation?.();
+    closeActionMenu();
+    setPendingClear(true);
+  };
+
+  const handleMentionFile = () => {
+    onMentionFile?.();
     closeActionMenu();
   };
 
@@ -153,10 +160,13 @@ export default function ChatActionMenu({ project, onClearConversation }) {
                   key={menuItem.id}
                   icon={menuItem.icon}
                   label={menuItem.label}
+                  disabled={menuItem.id === "mention-file" && !canMention}
                   onClick={
                     menuItem.id === "clear-conversation"
                       ? handleClearConversation
-                      : () => handleActionMenuStub(menuItem.stubName)
+                      : menuItem.id === "mention-file"
+                        ? handleMentionFile
+                        : () => handleActionMenuStub(menuItem.stubName)
                   }
                 />
               ))}
@@ -189,6 +199,50 @@ export default function ChatActionMenu({ project, onClearConversation }) {
                 ))
               )}
             </div>
+        </div>
+      )}
+
+      {/* Clear Conversation Confirmation Dialog */}
+      {pendingClear && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-md overflow-hidden"
+          >
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center shadow-lg shadow-red-200/50">
+                <Eraser size={28} className="text-white" />
+              </div>
+
+              <h3 className="text-xl font-black text-slate-900 mb-2">Clear Conversation?</h3>
+              <p className="text-sm text-slate-500 mb-1">
+                The entire chat conversation will be removed.
+              </p>
+              <p className="text-[11px] text-slate-400">
+                This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="px-8 pb-8 flex items-center gap-3">
+              <button
+                onClick={() => setPendingClear(false)}
+                className="flex-1 px-5 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest rounded-2xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setPendingClear(false);
+                  onClearConversation?.();
+                  closeActionMenu();
+                }}
+                className="flex-1 px-5 py-3 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-red-200/50 hover:shadow-red-300/50 active:scale-95"
+              >
+                Yes, Clear
+              </button>
+            </div>
+          </motion.div>
         </div>
       )}
     </>

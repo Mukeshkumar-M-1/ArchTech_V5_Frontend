@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { NavLink, Outlet, useParams } from 'react-router-dom';
+import { NavLink, Outlet, useParams, useNavigate } from 'react-router-dom';
 import useBuildCompleteStore from '../../store/buildCompleteStore';
 import usePendingDeleteStore from '../../store/pendingDeleteStore';
 import SettingsDialog from '../settings/SettingsDialog';
@@ -17,12 +17,15 @@ import {
   Search,
   Database,
   Menu,
-  Trash2
+  Trash2,
+  BookOpen,
+  Bot
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export default function WorkspaceLayout({ project }) {
   const { workspaceType } = useParams();
+  const navigate = useNavigate();
 
   // Lifted parallel document states
   const [syrsDoc, setSyrsDoc] = useState('# System Requirements Specification (SyRS)\n\nGenerated template for SyRS.');
@@ -36,6 +39,9 @@ export default function WorkspaceLayout({ project }) {
 
   // Sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // Collapsible Workspaces group
+  const [isWorkspacesOpen, setIsWorkspacesOpen] = useState(true);
 
   // Settings dialog state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -59,11 +65,54 @@ export default function WorkspaceLayout({ project }) {
   const navItems = [
     { id: 'requirements', label: 'Data Extraction', icon: FileText, path: '/workspace/requirements' },
     { id: 'knowledge', label: 'Memory Management', icon: Database, path: '/workspace/Memory' },
-    // { id: 'system', label: 'System Architecture', icon: Layers, path: '/workspace/system' },
-    // { id: 'hardware', label: 'Hardware HRS', icon: Cpu, path: '/workspace/hardware' },
     { id: 'software', label: 'Software SRS/SDD', icon: Code2, path: '/workspace/software' },
-    // { id: 'traceability', label: 'Bi-Traceability', icon: BarChart3, path: '/workspace/traceability' },
   ];
+  const guideItem = { id: 'guide', label: 'Guide/Manual', icon: BookOpen, path: '/guide', external: true };
+
+  const renderNavItem = (item, indented = false) => {
+    const base = `group flex items-center gap-3 ${isSidebarOpen ? (indented ? 'pl-3 pr-3 py-2.5 ml-4' : 'px-3 py-3') : 'p-3 justify-center'} rounded-xl text-sm font-semibold transition-all duration-300`;
+    const content = (isActive) => (
+      <>
+        <div className={`p-1.5 rounded-lg transition-colors shrink-0 ${isActive ? 'bg-white/20' : 'bg-slate-100 group-hover:bg-primary-50 group-hover:text-primary-500'}`}>
+          <item.icon size={indented ? 16 : 18} />
+        </div>
+        {isSidebarOpen && (
+          <>
+            <span className="flex-1 whitespace-nowrap">{item.label}</span>
+            <ChevronRight size={14} className={`shrink-0 transition-transform ${isActive ? 'opacity-100 translate-x-1' : 'opacity-0 -translate-x-2 group-hover:opacity-40 group-hover:translate-x-0'}`} />
+          </>
+        )}
+      </>
+    );
+
+    if (item.external) {
+      return (
+        <a
+          key={item.id}
+          href={item.path}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`${base} text-slate-500 hover:bg-slate-50 hover:text-slate-900`}
+          title={!isSidebarOpen ? item.label : undefined}
+        >
+          {content(false)}
+        </a>
+      );
+    }
+
+    return (
+      <NavLink
+        key={item.id}
+        to={item.path}
+        className={({ isActive }) =>
+          `${base} ${isActive ? 'bg-primary-500 text-white shadow-lg shadow-primary-500/30' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`
+        }
+        title={!isSidebarOpen ? item.label : undefined}
+      >
+        {({ isActive }) => content(isActive)}
+      </NavLink>
+    );
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white text-black font-sans">
@@ -82,8 +131,8 @@ export default function WorkspaceLayout({ project }) {
         </button>
 
         <div className={`flex items-center gap-3 mb-12 ${isSidebarOpen ? 'px-2' : 'px-1 justify-center'}`}>
-          <div className="min-w-[40px] w-10 h-10 bg-primary-500 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-[0_0_20px_rgba(59,130,246,0.4)] shrink-0">
-            A
+          <div className="min-w-[40px] w-10 h-10 bg-primary-50 border border-primary-200 rounded-lg flex items-center justify-center text-accent shadow-sm shadow-primary-500/10 shrink-0">
+            <Bot size={20} />
           </div>
           {isSidebarOpen && (
             <motion.div 
@@ -92,45 +141,42 @@ export default function WorkspaceLayout({ project }) {
               exit={{ opacity: 0 }}
               className="flex flex-col whitespace-nowrap overflow-hidden"
             >
-              <span className="font-extrabold text-lg tracking-tighter text-slate-900 leading-tight">ArchTech AI</span>
-              <span className="text-[10px] uppercase tracking-[0.2em] font-black text-primary-500">Systems Core</span>
+              <span className="flex items-center gap-2">
+                <span className="font-extrabold text-lg tracking-tighter text-slate-900 leading-tight">
+                  SDG <span className="text-primary-500">AI</span>
+                </span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-primary-600 bg-primary-50 border border-primary-200 px-2 py-0.5 rounded-full">
+                  Beta v1
+                </span>
+              </span>
             </motion.div>
           )}
         </div>
 
         <div className="mb-10 overflow-hidden">
           {isSidebarOpen && (
-             <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-4 pl-2 whitespace-nowrap">Domains / Workspaces</p>
+             <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-4 pl-2 whitespace-nowrap">Workspaces</p>
           )}
           <div className="flex flex-col gap-2">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.id}
-                to={item.path}
-                className={({ isActive }) => 
-                  `group flex items-center gap-3 ${isSidebarOpen ? 'px-3 py-3' : 'p-3 justify-center'} rounded-xl text-sm font-semibold transition-all duration-300 ${
-                    isActive 
-                      ? 'bg-primary-500 text-white shadow-lg shadow-primary-500/30' 
-                      : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-                  }`
-                }
-                title={!isSidebarOpen ? item.label : undefined}
-              >
-                {({ isActive }) => (
-                  <>
-                    <div className={`p-1.5 rounded-lg transition-colors shrink-0 ${isActive ? 'bg-white/20' : 'bg-slate-100 group-hover:bg-primary-50 group-hover:text-primary-500'}`}>
-                      <item.icon size={18} />
-                    </div>
-                    {isSidebarOpen && (
-                      <>
-                        <span className="flex-1 whitespace-nowrap">{item.label}</span>
-                        <ChevronRight size={14} className={`shrink-0 transition-transform ${isActive ? 'opacity-100 translate-x-1' : 'opacity-0 -translate-x-2 group-hover:opacity-40 group-hover:translate-x-0'}`} />
-                      </>
-                    )}
-                  </>
-                )}
-              </NavLink>
-            ))}
+            {renderNavItem(guideItem)}
+
+            <button
+              onClick={() => setIsWorkspacesOpen(!isWorkspacesOpen)}
+              className="group flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all duration-300"
+              title={!isSidebarOpen ? 'Workspaces' : undefined}
+            >
+              <div className="p-1.5 rounded-lg bg-slate-100 group-hover:bg-primary-50 group-hover:text-primary-500 transition-colors shrink-0">
+                <Layers size={18} />
+              </div>
+              {isSidebarOpen && (
+                <>
+                  <span className="flex-1 text-left whitespace-nowrap">Workspaces</span>
+                  <ChevronRight size={14} className={`shrink-0 transition-transform duration-300 ${isWorkspacesOpen ? 'rotate-90' : ''}`} />
+                </>
+              )}
+            </button>
+
+            {isWorkspacesOpen && navItems.map((item) => renderNavItem(item, true))}
           </div>
         </div>
 
@@ -140,18 +186,26 @@ export default function WorkspaceLayout({ project }) {
               <div className="absolute top-0 right-0 w-24 h-24 bg-primary-500/10 rounded-full blur-2xl -mr-10 -mt-10"></div>
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Authenticated Session</p>
               <div className="font-bold text-sm text-slate-900 truncate relative z-10">{project?.name || 'Gateway Node B'}</div>
-              <div className="text-xs font-mono text-primary-500 mt-1 relative z-10">{project?.id || 'ARCH-2026-X1'}</div>
+              <div className="flex items-center gap-1.5 mt-1 relative z-10">
+                <span className="text-xs font-mono text-primary-500 truncate">{project?.id || 'ARCH-2026-X1'}</span>
+                {project?.productId && (
+                  <span className="text-[9px] font-black uppercase tracking-wider text-blue-600 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-full shrink-0">
+                    {project.productId}
+                  </span>
+                )}
+              </div>
             </div>
           ) : null}
           
           <div className={`flex items-center gap-3 ${isSidebarOpen ? '' : 'flex-col'}`}>
-            {/* <button 
+            <button
+              onClick={() => navigate('/')}
               className={`flex items-center justify-center gap-2 py-3 bg-primary-500 text-white rounded-xl text-xs font-bold hover:bg-primary-400 transition-all duration-300 shadow-[0_0_15px_rgba(59,130,246,0.3)] hover:shadow-[0_0_25px_rgba(59,130,246,0.5)] ${isSidebarOpen ? 'flex-1 px-4' : 'w-10 h-10 p-0 rounded-full'}`}
               title={!isSidebarOpen ? 'Sign Out' : undefined}
             >
               <LogOut size={isSidebarOpen ? 14 : 16} />
               {isSidebarOpen && <span className="whitespace-nowrap">Sign Out</span>}
-            </button> */}
+            </button>
             <button
               onClick={() => setIsSettingsOpen(true)}
               className={`p-3 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-slate-900 hover:border-slate-300 hover:bg-slate-50 transition-all duration-300 shadow-sm shrink-0 ${isSidebarOpen ? '' : 'w-10 h-10 rounded-full flex items-center justify-center p-0'}`}

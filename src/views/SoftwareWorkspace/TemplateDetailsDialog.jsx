@@ -20,6 +20,7 @@ import {
  * @param {() => void} props.onClose - Callback to close the dialog.
  * @param {(filename: string, isLocked: boolean) => void} [props.onSectionLockChange] - Callback when section lock changes.
  * @param {(templateName: string, isLocked: boolean) => void} [props.onTemplateLockChange] - Callback when template lock changes.
+ * @param {(templateName: string) => void} [props.onTemplateDeleted] - Callback after a template is deleted (refreshes the dropdown).
  */
 export default function TemplateDetailsDialog({
   projectId,
@@ -29,6 +30,7 @@ export default function TemplateDetailsDialog({
   onClose,
   onSectionLockChange,
   onTemplateLockChange,
+  onTemplateDeleted,
 }) {
   const addToast = useToastStore((state) => state.addToast);
 
@@ -54,7 +56,7 @@ export default function TemplateDetailsDialog({
         setSectionList(sectionsResponse || []);
         setLockStateMap(locksResponse || {});
       } catch (sectionLoadError) {
-        addToast('error', `Failed to load sections: ${sectionLoadError.message}`);
+        addToast(`Failed to load sections: ${sectionLoadError.message}`, 'error');
       } finally {
         setIsLoadingSections(false);
       }
@@ -74,7 +76,7 @@ export default function TemplateDetailsDialog({
       // Refresh lock state from the backend (returns { template_type: "Standard" })
       const locks = await fetchTemplateLocks(projectId);
       setLockStateMap(locks || {});
-      addToast('success', `Template ${newLockState ? 'locked' : 'unlocked'}.`);
+      addToast(`Template ${newLockState ? 'locked' : 'unlocked'}.`, 'success');
       if (onSectionLockChange) {
         onSectionLockChange('', newLockState);
       }
@@ -82,7 +84,7 @@ export default function TemplateDetailsDialog({
         onTemplateLockChange(selectedTemplateName, newLockState);
       }
     } catch (err) {
-      addToast('error', `Failed: ${err.message}`);
+      addToast(`Failed: ${err.message}`, 'error');
     } finally {
       setIsProcessingLock(false);
     }
@@ -95,10 +97,15 @@ export default function TemplateDetailsDialog({
     setIsDeletingTemplate(true);
     try {
       await removeTemplateType(projectId, selectedTemplateName);
-      addToast('success', `Template '${selectedTemplateName}' has been removed`);
+      addToast(`Template '${selectedTemplateName}' has been removed`, 'success');
+      // Notify the parent before closing so the dropdown refreshes while the
+      // dialog is closing (otherwise the deleted template stays listed).
+      if (onTemplateDeleted) {
+        onTemplateDeleted(selectedTemplateName);
+      }
       onClose();
     } catch (templateDeleteError) {
-      addToast('error', `Failed to delete template: ${templateDeleteError.message}`);
+      addToast(`Failed to delete template: ${templateDeleteError.message}`, 'error');
     } finally {
       setIsDeletingTemplate(false);
     }
@@ -109,12 +116,12 @@ export default function TemplateDetailsDialog({
     setIsResetting(true);
     try {
       const result = await resetTemplateToSource(projectId, selectedTemplateName);
-      addToast('success', `Template reset. ${result.sections_reset} sections restored.`);
+      addToast(`Template reset. ${result.sections_reset} sections restored.`, 'success');
       // Reload sections after reset
       const sections = await fetchTemplateSections(projectId, selectedTemplateName);
       setSectionList(sections || []);
     } catch (err) {
-      addToast('error', `Failed to reset template: ${err.message}`);
+      addToast(`Failed to reset template: ${err.message}`, 'error');
     } finally {
       setIsResetting(false);
     }
@@ -143,17 +150,13 @@ export default function TemplateDetailsDialog({
           </button>
         </div>
 
-        {/* Section list */}
-        <div className="overflow-y-auto px-5 py-3 min-h-0" style={{ maxHeight: 'calc(11 * 32px)' }}>
-          {isLoadingSections ? (
-            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-              <Loader2 size={20} className="animate-spin mb-2" />
-              <span className="text-xs">Loading sections…</span>
-            </div>
-          ) : (
+        {/* Section list — fixed header outside the scroll area so rows can never
+            paint over the headings (sticky-on-th glitches with table borders) */}
+        {!isLoadingSections && (
+          <div className="px-5 pt-3">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-slate-200 sticky top-0 bg-white z-10">
+                <tr className="border-b border-slate-200">
                   <th className="text-left py-2.5 px-2 text-[10px] font-black uppercase tracking-widest text-slate-400 w-16">
                     No.
                   </th>
@@ -163,8 +166,22 @@ export default function TemplateDetailsDialog({
                   <th className="text-left py-2.5 px-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
                     Section Name
                   </th>
+                  <th className="text-left py-2.5 px-2 text-[10px] font-black uppercase tracking-widest text-slate-400 w-20">
+                    Origin
+                  </th>
                 </tr>
               </thead>
+            </table>
+          </div>
+        )}
+        <div className="overflow-y-auto px-5 pb-3 min-h-0" style={{ maxHeight: 'calc(11 * 32px)' }}>
+          {isLoadingSections ? (
+            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+              <Loader2 size={20} className="animate-spin mb-2" />
+              <span className="text-xs">Loading sections…</span>
+            </div>
+          ) : (
+            <table className="w-full">
               <tbody>
                 {sectionList?.map((sectionEntry) => {
                   return (
@@ -175,11 +192,23 @@ export default function TemplateDetailsDialog({
                       <td className="py-2.5 px-2 text-xs font-mono text-slate-500 w-16">
                         {String(sectionEntry.section_number).padStart(2, '0')}
                       </td>
-                      <td className="py-2.5 px-2 text-xs text-primary-600 font-semibold w-24">
+                      <td className="py-2.5 px-2 text-xs text-primary-600 font-semibold w-24 whitespace-nowrap">
                         {selectedTemplateName}
                       </td>
                       <td className="py-2.5 px-2 text-xs font-medium text-slate-800">
                         {sectionEntry.title}
+                      </td>
+                      <td className="py-2.5 px-2 w-20">
+                        <span
+                          className={`inline-block px-1.5 py-px rounded-full text-[9px] font-black uppercase tracking-wider border ${
+                            templateOrigin === 'global'
+                              ? 'bg-blue-50 text-blue-600 border-blue-200'
+                              : 'bg-violet-50 text-violet-600 border-violet-200'
+                          }`}
+                          title={templateOrigin === 'global' ? 'System-provided template (cannot be deleted)' : 'Project-owned template'}
+                        >
+                          {templateOrigin === 'global' ? 'Global' : 'Local'}
+                        </span>
                       </td>
                     </tr>
                   );
@@ -213,7 +242,7 @@ export default function TemplateDetailsDialog({
             {/* Reset Template Button */}
             <button
               onClick={handleResetTemplate}
-              disabled={isResetting || sectionList.length === 0 || isLoadingSections}
+              disabled={isResetting || isLoadingSections}
               className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 disabled:text-slate-300 disabled:bg-slate-100 disabled:cursor-not-allowed"
               title="Reset all sections back to source template"
             >

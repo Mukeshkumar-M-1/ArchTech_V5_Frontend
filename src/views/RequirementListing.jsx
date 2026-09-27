@@ -27,6 +27,8 @@ import {
   ZoomOut,
   RotateCcw,
   Ban,
+  Pencil,
+  Save,
 } from "lucide-react";
 import remarkGfm from "remark-gfm";
 import CustomSelect from "../components/ui/CustomSelect";
@@ -42,11 +44,13 @@ import {
   submitSelectedRequirementsIds,
   getPdfViewerUrl,
 } from "../api/requirementApi";
+import { fetchProjectSettings } from "../api/settingsApi";
 import TiptapEditor from "../components/TiptapEditor";
 
 
 import useToastStore from "../store/toastStore";
 import useExtractionStore from "../store/extractionStore";
+import { motion } from "framer-motion";
 
 // --- Sub-components for performance isolation ---
 
@@ -181,7 +185,7 @@ export default function RequirementListing({ project }) {
     type: "Functional",
     source: "Manual",
   });
-  const [docType, setDocType] = useState("TechSpec");
+  const [docType, setDocType] = useState("SyRS");
   const navigate = useNavigate();
   const [filterCategory, setFilterCategory] = useState("All");
 
@@ -221,6 +225,7 @@ export default function RequirementListing({ project }) {
   const [highlightedReqId, setHighlightedReqId] = useState(null);
   const [showAddReqModal, setShowAddReqModal] = useState(false);
   const [submittingSelected, setSubmittingSelected] = useState(false);
+  const [pendingCancel, setPendingCancel] = useState(false);
 
   // ===================================================================
   // Toast
@@ -324,6 +329,31 @@ export default function RequirementListing({ project }) {
     const file = e.target.files[0];
 
     if (!file) return;
+
+    // Only PDFs are supported by the extraction pipeline
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      addToast("Only PDF files are supported for requirement extraction.", "error");
+      e.target.value = "";
+      return;
+    }
+
+    // LLM settings must be configured before extraction can run
+    try {
+      const settings = await fetchProjectSettings(project.id);
+      if (!settings?.api_url || !settings?.api_key || !settings?.default_model) {
+        addToast(
+          "LLM is not configured. Open Settings and set API URL, API Key and Model before uploading.",
+          "error",
+        );
+        e.target.value = "";
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to load LLM settings:", err);
+      addToast("Could not verify LLM settings. Configure them in Settings before uploading.", "error");
+      e.target.value = "";
+      return;
+    }
 
     setIsExtracting(true);
     setIsCancelling(false);
@@ -742,11 +772,8 @@ export default function RequirementListing({ project }) {
             </div>
             <div>
               <h3 className="text-2xl font-black text-slate-800 tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600 drop-shadow-sm">
-                Source Specifications
+                Data Extraction
               </h3>
-              <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest mt-1 drop-shadow-sm">
-                Ingest technical documents for AI extraction
-              </p>
             </div>
           </div>
 
@@ -776,7 +803,7 @@ export default function RequirementListing({ project }) {
             )}
             {isExtracting && (
               <button
-                onClick={handleCancelExtraction}
+                onClick={() => setPendingCancel(true)}
                 disabled={extractingCancelling}
                 className="flex items-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-black uppercase tracking-widest rounded-2xl text-[11px] transition-all shadow-lg shadow-red-100 hover:shadow-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -793,10 +820,6 @@ export default function RequirementListing({ project }) {
                 value={docType}
                 onChange={setDocType}
                 options={[
-                  {
-                    label: "Technical Specification (Full Chain)",
-                    value: "TechSpec",
-                  },
                   { label: "System Requirements (SyRS)", value: "SyRS" },
                   { label: "Hardware Requirements (HRS)", value: "HRS" },
                 ]}
@@ -815,7 +838,7 @@ export default function RequirementListing({ project }) {
               <input
                 type="file"
                 className="hidden"
-                accept=".pdf,.docx,.odt,.txt,.md"
+                accept=".pdf"
                 onChange={handleFileUpload}
                 disabled={isExtracting}
               />
@@ -824,13 +847,7 @@ export default function RequirementListing({ project }) {
         </div>
 
         {/* Bottom Row - Data Extraction & View Selection */}
-        <div className="relative p-8 flex justify-between items-center bg-white/20 backdrop-blur-sm">
-          <div className="flex items-center gap-3">
-            <h2 className="text-3xl font-black text-slate-800 tracking-tight bg-clip-text text-transparent bg-gradient-to-br from-slate-900 to-slate-600 ml-2">
-              Data Extraction
-            </h2>
-          </div>
-
+        <div className="relative p-8 flex justify-end items-center bg-white/20 backdrop-blur-sm">
           <div className="flex items-center gap-6">
             <div className="flex items-center bg-white/60 p-1.5 rounded-[20px] border border-slate-200/60 shadow-inner">
               <button
@@ -1233,8 +1250,9 @@ export default function RequirementListing({ project }) {
                           {editingId === req.id ? (
                             <button
                               onClick={() => handleSaveEdit(req.id)}
-                              className="text-[12px] font-black text-white bg-primary-600 hover:bg-primary-700 px-4 py-2 rounded-lg transition-colors shadow-md shadow-primary-200"
+                              className="flex items-center gap-2 text-[12px] font-black text-white bg-primary-600 hover:bg-primary-700 px-4 py-2 rounded-lg transition-colors shadow-md shadow-primary-200"
                             >
+                              <Save size={14} />
                               Save Changes
                             </button>
                           ) : (
@@ -1243,12 +1261,13 @@ export default function RequirementListing({ project }) {
                                 setEditingId(req.id);
                                 setEditText(explanationToMarkdownForEdit(req.explanation));
                               }}
-                              className="text-[12px] font-black text-primary-600 bg-primary-50 hover:bg-primary-100 border border-primary-100 px-4 py-2 rounded-lg transition-colors"
+                              className="flex items-center gap-2 text-[12px] font-black text-primary-600 bg-primary-50 hover:bg-primary-100 border border-primary-100 px-4 py-2 rounded-lg transition-colors"
                             >
+                              <Pencil size={14} />
                               Edit
                             </button>
                           )}
-                          <button
+                          {/* <button
                             onClick={() => toggleInsightResult(req.id)}
                             className={`text-[12px] font-black transition-all flex items-center gap-2 px-4 py-2 rounded-lg ${
                               summaries[req.id]?.length > 0 ||
@@ -1267,7 +1286,7 @@ export default function RequirementListing({ project }) {
                               : aiPanelId === req.id
                                 ? "Cancel AI"
                                 : "AI Insight"}
-                          </button>
+                          </button> */}
                         </div>
                       </div>
                     </div>
@@ -1895,6 +1914,49 @@ export default function RequirementListing({ project }) {
             </div>
           );
         })()}
+
+      {/* Cancel Extraction Confirmation Dialog */}
+      {pendingCancel && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-md overflow-hidden"
+          >
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center shadow-lg shadow-red-200/50">
+                <Ban size={28} className="text-white" />
+              </div>
+
+              <h3 className="text-xl font-black text-slate-900 mb-2">Cancel Extraction?</h3>
+              <p className="text-sm text-slate-500 mb-1">
+                Requirement extraction is currently in progress.
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Cancelling will stop the process and progress made so far may be lost.
+              </p>
+            </div>
+
+            <div className="px-8 pb-8 flex items-center gap-3">
+              <button
+                onClick={() => setPendingCancel(false)}
+                className="flex-1 px-5 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest rounded-2xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+              >
+                Keep Extracting
+              </button>
+              <button
+                onClick={() => {
+                  setPendingCancel(false);
+                  handleCancelExtraction();
+                }}
+                className="flex-1 px-5 py-3 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-red-200/50 hover:shadow-red-300/50 active:scale-95"
+              >
+                Yes, Cancel
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

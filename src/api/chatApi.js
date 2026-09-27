@@ -9,11 +9,12 @@ import { getApiUrl } from '../utils/apiConfig';
  * @param {AbortSignal} [options.signal] - Optional AbortController signal to cancel the stream.
  * @returns {AsyncGenerator<{type: string, [key: string]: any}>} SSE event stream.
  */
-export async function* sendChatMessage({ message, session_id, project_id, signal, contextBlocks }) {
+export async function* sendChatMessage({ message, session_id, project_id, template_type, signal, contextBlocks, mentions }) {
   const res = await fetch(getApiUrl('/chat/send'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id, message, project_id, context_blocks: contextBlocks }),
+    // template_type is dropped by JSON.stringify when undefined — backend defaults to "srs".
+    body: JSON.stringify({ session_id, message, project_id, template_type, context_blocks: contextBlocks, mentions }),
     signal,
   });
 
@@ -54,20 +55,22 @@ export async function* sendChatMessage({ message, session_id, project_id, signal
 /**
  * Fetch conversation history for a session.
  * @param {string} sessionId
- * @returns {Promise<Array<{role: string, content: string}>>}
+ * @param {string} [projectId] - Scopes the session lookup to this project's session records.
+ * @returns {Promise<Array<{role: string, content: string, timestamp: number}>>}
  */
-export async function fetchChatMessages(sessionId) {
-  const res = await fetch(getApiUrl(`/chat/messages/${sessionId}`));
+export async function fetchChatMessages(sessionId, projectId) {
+  const res = await fetch(getApiUrl(`/chat/messages/${sessionId}?project_id=${encodeURIComponent(projectId ?? "")}`));
   if (!res.ok) throw new Error('Failed to fetch chat messages');
   return res.json();
 }
 
 /**
- * List all active chat sessions.
- * @returns {Promise<Array<{session_id: string, message_count: number}>>}
+ * List all chat sessions, newest first.
+ * @param {string} [projectId] - When given, lists only this project's sessions.
+ * @returns {Promise<Array<{sessionId: string, startedAt: number}>>}
  */
-export async function fetchChatSessions() {
-  const res = await fetch(getApiUrl('/chat/sessions'));
+export async function fetchChatSessions(projectId) {
+  const res = await fetch(getApiUrl(`/chat/sessions?project_id=${encodeURIComponent(projectId ?? "")}`));
   if (!res.ok) throw new Error('Failed to fetch sessions');
   return res.json();
 }

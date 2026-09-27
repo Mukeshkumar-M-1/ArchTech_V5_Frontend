@@ -59,6 +59,15 @@ export async function fetchMemoryProgress(projectId) {
 }
 
 /**
+ * Check whether extracted requirements exist before starting memory generation.
+ * @param {string} projectId - The unique project identifier.
+ * @returns {Promise<{present: boolean, count: number}>}
+ */
+export async function checkRequirements(projectId) {
+  return request(`/${projectId}/requirements-check`);
+}
+
+/**
  * Start the memory generation process.
  * @param {string} projectId - The unique project identifier.
  */

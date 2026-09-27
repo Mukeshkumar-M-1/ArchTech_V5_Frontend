@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import TiptapEditor from "../../components/TiptapEditor";
 import {
   Zap,
   FileText,
+  AlertTriangle,
   Loader2,
   X,
   ChevronDown,
@@ -19,129 +20,27 @@ import {
   SidebarClose,
   SidebarOpen,
   RefreshCw,
-  ArrowLeft,
-  ArrowRight,
-  Check,
+  Layers,
+  AtSign,
 } from "lucide-react";
 import { getApiUrl } from "../../utils/apiConfig";
+import { fetchProjectSettings } from "../../api/settingsApi";
+import useToastStore from "../../store/toastStore";
 import {
   fetchDocumentVersions,
   fetchVersionSections,
   fetchVersionContent,
   updateVersionContent,
+  fetchPhase3Analysis,
 } from "../../api/templateApi";
 import PreviewModal from "./PreviewModal";
 import ExportModal from "./ExportModal";
+import ContentEditPreviewPanel from "./ContentEditPreviewPanel";
+import { findBestMatchInMarkdown } from "../../utils/markdownMatch";
 import useGenerationStore from "../../store/generationStore";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-/**
- * EditActionsBar — floating bar showing pending content_edit blocks
- * with Accept All and Reject All buttons, styled like the SelectedBlocksIndicator.
- */
-function EditActionsBar({ chatMessages, onInteractionSubmit, currentSessionId }) {
-  const pendingEdits = (chatMessages || [])
-    .filter(
-      (msg) =>
-        msg.role === "tool" &&
-        msg.ui_type === "content_edit" &&
-        msg.status === "awaiting_input",
-    );
-  if (pendingEdits.length === 0) return null;
-
-  const allPayloads = [];
-  for (const msg of pendingEdits) {
-    try {
-      const opts = msg.input?.options || msg.options || [];
-      if (opts.length > 0) {
-        const payload = typeof opts[0] === "string" ? JSON.parse(opts[0]) : opts[0];
-        allPayloads.push({ msg, payload });
-      }
-    } catch {
-      // skip malformed payloads
-    }
-  }
-  if (allPayloads.length === 0) return null;
-
-  const handleRejectAll = () => {
-    for (const { msg, payload } of allPayloads) {
-      onInteractionSubmit(currentSessionId, msg.tool_call_id, {
-        status: "rejected",
-      });
-      window.dispatchEvent(new CustomEvent("apply-content-edit-reject", {
-        detail: {
-          block_number: payload.block_number,
-          original_text: payload.original_text,
-          proposed_text: payload.proposed_text,
-        },
-      }));
-    }
-  };
-
-  const handleAcceptAll = () => {
-    for (const { msg, payload } of allPayloads) {
-      onInteractionSubmit(currentSessionId, msg.tool_call_id, {
-        status: "accepted",
-        ui_type: "content_edit",
-        section_filename: payload.section_filename,
-        proposed_text: payload.proposed_text,
-        block_number: payload.block_number,
-      });
-      window.dispatchEvent(new CustomEvent("apply-content-edit-accept", {
-        detail: {
-          block_number: payload.block_number,
-          original_text: payload.original_text,
-          proposed_text: payload.proposed_text,
-        },
-      }));
-    }
-  };
-
-  return (
-    <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-10 bg-primary-600/95 backdrop-blur-sm text-white px-3 py-2 rounded-xl shadow-lg shadow-primary-900/20 flex items-center gap-3 text-xs font-medium border border-primary-500/50">
-      <button
-        onClick={handleAcceptAll}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg transition-colors cursor-pointer font-semibold"
-        title="Accept all edits"
-      >
-        <Check size={14} />
-        Accept
-      </button>
-      <button
-        onClick={handleRejectAll}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg transition-colors cursor-pointer font-semibold"
-        title="Reject all edits"
-      >
-        <X size={14} />
-        Reject
-      </button>
-      <div className="w-px h-4 bg-primary-400/50" />
-      <div className="flex items-center gap-2">
-        <div className="flex items-center justify-center bg-white text-blue-500 w-5 h-5 rounded-full text-[10px] font-bold">
-          {allPayloads.length}
-        </div>
-        <span>
-          Edits Pending
-        </span>
-      </div>
-      {/* <div className="flex items-center gap-1">
-        <button
-          className="flex items-center justify-center w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 transition-colors cursor-pointer text-white/80 hover:text-white"
-          title="Previous edited message"
-        >
-          <ArrowLeft size={14} />
-        </button>
-        <button
-          className="flex items-center justify-center w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 transition-colors cursor-pointer text-white/80 hover:text-white"
-          title="Next edited message"
-        >
-          <ArrowRight size={14} />
-        </button>
-      </div> */}
-    </div>
-  );
-}
 /**
  * Recursive heading tree component.
  */
@@ -241,13 +140,13 @@ function ExecutionTimeline({
         const path = input.file_path || input.target_file || "";
         return path.split(/[/\\]/).pop();
       }
-      case "Grep":
+      case "Search":
       case "Glob":
         return input.pattern || input.glob;
       case "Agent":
         return input.agent_type;
       case "Bash":
-        return input.command;
+        return input.description;
       case "RequestUserInput":
         return input?.title
       default:
@@ -413,7 +312,7 @@ function ExecutionTimeline({
                 </span>
               )}
               <span className="text-[10px] text-gray-500 ml-auto">
-                {Object.values(turnGroups).flat().length} tool{Object.values(turnGroups).flat().length !== 1 ? "s" : ""}
+                {Object.values(turnGroups).flat().filter((e) => e.kind !== "assistant_message" && e.kind !== "llm_retry").length} tool{Object.values(turnGroups).flat().filter((e) => e.kind !== "assistant_message" && e.kind !== "llm_retry").length !== 1 ? "s" : ""}
               </span>
 
               {sectionHasRunningTurns && !isSectionActive && (
@@ -433,6 +332,51 @@ function ExecutionTimeline({
                     statusConfig[toolEntry.status] ||
                     statusConfig.running;
                   const isLastEntry = toolIndex === allToolEntries.length - 1;
+
+                  // LLM retry/backoff events render as an amber warning row —
+                  // they are not tools, so they bypass the collapsible IN/OUT row.
+                  if (toolEntry.kind === "llm_retry") {
+                    return (
+                      <div key={toolEntry.id} className="relative pl-6 pb-2 mt-1">
+                        {(isSectionActive || !isLastEntry) && (
+                          <div className={`absolute left-[11px] top-4 ${isLastEntry && isSectionActive ? "bottom-[-24px]" : "bottom-[-16px]"} w-[1px] bg-gray-200`} />
+                        )}
+                        <div className="absolute left-[8px] top-[6px] w-[7px] h-[7px] rounded-full ring-2 ring-white bg-amber-500" />
+                        <div className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-left">
+                          <AlertTriangle size={11} className="text-amber-600 shrink-0" />
+                          <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">
+                            LLM retry
+                          </span>
+                          <span className="text-[10px] font-mono text-amber-700">
+                            {toolEntry.model} · {toolEntry.reason} · attempt {toolEntry.attempt}/{toolEntry.maxAttempts} · waiting {toolEntry.waitSeconds}s
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // Assistant narration that accompanied a tool call renders as a
+                  // Markdown message bubble, not a collapsible tool row.
+                  if (toolEntry.kind === "assistant_message") {
+                    return (
+                      <div key={toolEntry.id} className="relative pl-6 pb-2 mt-1">
+                        {(isSectionActive || !isLastEntry) && (
+                          <div className={`absolute left-[11px] top-4 ${isLastEntry && isSectionActive ? "bottom-[-24px]" : "bottom-[-16px]"} w-[1px] bg-gray-200`} />
+                        )}
+                        <div className="absolute left-[8px] top-[6px] w-[7px] h-[7px] rounded-full ring-2 ring-white bg-primary-500" />
+                        <div className="rounded-lg border border-primary-100 bg-primary-50/40 px-3 py-2 text-left">
+                          <div className="text-[10px] font-bold uppercase tracking-wide text-accent mb-1">
+                            Assistant
+                          </div>
+                          <div className="prose max-w-none text-[12px] text-slate-700 break-words [&_table]:w-full [&_th]:text-left [&_th]:text-[11px] [&_td]:text-[11px] [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {toolEntry.content}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div
@@ -804,14 +748,17 @@ export default function GenerationPanel({
   setSelectedChatBlocks,
   focusedChatBlock,
   setFocusedChatBlock,
-  chatMessages,
   onInteractionSubmit,
   currentSessionId,
   isAwaitingUserInput,
   onAwaitingUserInputChange,
   pendingToolCallId,
   setPendingToolCallId,
+  onActiveSectionContextChange,
+  mentionedFiles = [],
+  setMentionedFiles,
 }) {
+  const addToast = useToastStore((s) => s.addToast);
   // Local state for streaming generation
   const [generationHeadings, setGenerationHeadings] = useState([]);
   const [headingExpandedSections, setHeadingExpandedSections] = useState(new Set([]));
@@ -821,6 +768,10 @@ export default function GenerationPanel({
   const [latestVersionSections, setLatestVersionSections] = useState([]);
   const [selectedSectionFile, setSelectedSectionFile] = useState(null);
   const [selectedSectionContent, setSelectedSectionContent] = useState("");
+  // Per-section markdown cached while concatenating the full doc — TOC clicks use it to
+  // find which section owns a heading without refetching every section.
+  const latestVersionSectionContentsRef = useRef({});
+  const pendingTocHeadingRef = useRef(null);
 
   // Switch section when a chat block is focused
   useEffect(() => {
@@ -830,12 +781,38 @@ export default function GenerationPanel({
   }, [focusedChatBlock, selectedSectionFile]);
   const [viewingVersion, setViewingVersion] = useState(null);
   const [totalVersions, setTotalVersions] = useState(0);
+  /* Active (non-deleted) version numbers, ascending. Prev/next navigation and
+     the draggable version bar step through THIS list by position, not by raw
+     version number, so soft-deleted versions (number gaps) are never shown. */
+  const [navigableVersionNumbers, setNavigableVersionNumbers] = useState([]);
+  const [scrubVersion, setScrubVersion] = useState(null);
   const [isTocOpen, setIsTocOpen] = useState(true);
   const [tocCollapsed, setTocCollapsed] = useState(new Set());
+
+  // Report the currently-viewed section + version up to the shared workspace so the chat
+  // panel can capture a "mention file" of whatever the user is looking at.
+  useEffect(() => {
+    onActiveSectionContextChange?.(
+      selectedSectionFile && viewingVersion
+        ? { filename: selectedSectionFile, version: viewingVersion }
+        : null,
+    );
+  }, [selectedSectionFile, viewingVersion, onActiveSectionContextChange]);
 
   // Modals state
   const [showPreview, setShowPreview] = useState(false);
   const [showExport, setShowExport] = useState(false);
+
+  // Tabbed content-edit preview (Current/Proposed). The router resolves the proposal to the
+  // backend-stored markdown and opens the modal instead of splicing a diff into the live
+  // editor — queued so multiple pending edits drain one at a time.
+  const [activeEditPreview, setActiveEditPreview] = useState(null); // { edit, sourceMarkdown }
+  const editPreviewQueueRef = useRef([]); // [{ edit, sourceMarkdown }]
+  const [editPreviewSaving, setEditPreviewSaving] = useState(false);
+  const [editPreviewError, setEditPreviewError] = useState(null);
+  // Tab strip in the document pane: the live editor and the edit preview are sibling
+  // tabs while a proposal is open.
+  const [editorPaneTab, setEditorPaneTab] = useState("editor");
 
   const [sidebarTab, setSidebarTab] = useState("outline");
   const currentSectionRef = useRef("");
@@ -861,27 +838,53 @@ export default function GenerationPanel({
   const currentTurnRef = useRef(0);
   const currentTaskIdRef = useRef("");
   const saveVersionRef = useRef(null);
+  // WHY: cancel stops the run via the backend pause flag, which emits a "paused" SSE event that
+  // races in after the user already cancelled — without this guard the banner flips to "Resume".
+  const cancelledRef = useRef(false);
+  // Counts sections the backend reported as failed; a run with failures is NOT a success, so the
+  // Build Complete panel must stay hidden (orchestrator counts failed tasks as completed).
+  const failedSectionsRef = useRef(0);
 
-  // Auto-save generated version edits with 1000ms debounce
+  // Auto-save generated version edits with a 1000ms debounce, one independent timer per section.
+  // WHY per-section timers: a single shared timer means editing section B within 1 second of
+  // section A cancels A's still-pending save and silently loses A's edit.
+  // WHY the post-save cache sync: `latestVersionSections` and `latestVersionSectionContentsRef`
+  // are snapshots from the initial load — without this, an "empty" section the user just filled
+  // keeps has_content=false and the section list label + TOC cache go stale.
   useEffect(() => {
-    if (saveVersionRef.current) saveVersionRef.current.cancel();
-    
-    saveVersionRef.current = {
-      timeout: null,
-      save: (projectId, sectionFilename, version, content) => {
-        if (!projectId || !sectionFilename || !version) return;
-        if (saveVersionRef.current.timeout) clearTimeout(saveVersionRef.current.timeout);
-        saveVersionRef.current.timeout = setTimeout(async () => {
-          try {
-            await updateVersionContent(projectId, sectionFilename, version, content);
-          } catch (err) {
-            console.error('Failed to save version content:', err);
-          }
-        }, 1000);
-      },
-      cancel: () => {
-        if (saveVersionRef.current?.timeout) clearTimeout(saveVersionRef.current.timeout);
+    const SAVE_DEBOUNCE_MS = 1000;
+    const pendingSaveTimersBySection = {};
+
+    const saveEditedSectionContent = (projectId, sectionFilename, documentVersion, editedContent) => {
+      if (!projectId || !sectionFilename || !documentVersion) return;
+
+      if (pendingSaveTimersBySection[sectionFilename]) {
+        clearTimeout(pendingSaveTimersBySection[sectionFilename]);
       }
+      pendingSaveTimersBySection[sectionFilename] = setTimeout(async () => {
+        delete pendingSaveTimersBySection[sectionFilename];
+        try {
+          await updateVersionContent(projectId, sectionFilename, documentVersion, editedContent);
+
+          latestVersionSectionContentsRef.current[sectionFilename] = editedContent;
+          setLatestVersionSections((previousSections) =>
+            previousSections.map((section) =>
+              section.section_filename === sectionFilename
+                ? { ...section, has_content: editedContent.trim().length > 0 }
+                : section,
+            ),
+          );
+        } catch (saveError) {
+          console.error('Failed to save version content:', saveError);
+        }
+      }, SAVE_DEBOUNCE_MS);
+    };
+
+    saveVersionRef.current = {
+      save: saveEditedSectionContent,
+      cancel: () => {
+        Object.values(pendingSaveTimersBySection).forEach(clearTimeout);
+      },
     };
 
     return () => saveVersionRef.current?.cancel();
@@ -935,14 +938,48 @@ export default function GenerationPanel({
   const [regeneratingSectionProgress, setRegeneratingSectionProgress] = useState(0);
   const isGenerating = isGenActive || status === "generating" || isRegenerating;
   const isPaused = status === "paused";
-  console.log("[Generating] : ", isGenerating)
 
   /**
    * Start document generation via SSE.
    */
-  const handleGenerate = useCallback(async () => {
+  const handleGenerate = useCallback(async (mode = "fresh") => {
+    const projectId = project?.id || project?._id;
+
+    // LLM settings must be configured before generation can run
+    if (projectId) {
+      try {
+        const settings = await fetchProjectSettings(projectId);
+        if (!settings?.api_url || !settings?.api_key || !settings?.default_model) {
+          addToast(
+            "LLM is not configured. Open Settings and set API URL, API Key and Model before generating.",
+            "error",
+          );
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to load LLM settings:", err);
+        addToast("Could not verify LLM settings. Configure them in Settings before generating.", "error");
+        return;
+      }
+
+      // The template analysis report ({project_id}_template_report.json) must exist
+      // before generation — the backend 404s if it's missing.
+      try {
+        await fetchPhase3Analysis(projectId);
+      } catch {
+        addToast(
+          "Template analysis report not found. Run template analysis in the Document Template panel before generating.",
+          "error",
+        );
+        return;
+      }
+    }
+
     const abortCtrl = new AbortController();
     abortRef.current = abortCtrl;
+    // Fresh run: no longer cancelled, and no failures counted yet.
+    cancelledRef.current = false;
+    failedSectionsRef.current = 0;
     generationStore.setError(null);
     setDocContentStore("");
     setGenerationHeadings([]);
@@ -962,7 +999,7 @@ export default function GenerationPanel({
     setSelectedSectionContent("");
     setViewingVersion(null);
     setTotalVersions(0);
-    const projectId = project?.id;
+    setNavigableVersionNumbers([]);
     const documentType = activeMainTab === "srs" ? "srs" : "sdd";
 
     // Clear any stale pause signal from a previous session
@@ -980,6 +1017,7 @@ export default function GenerationPanel({
           requirement_ids: [],
           template_type: documentType,
           project_id: projectId,
+          mode,
         }),
         signal: abortCtrl.signal,
       });
@@ -1047,6 +1085,28 @@ export default function GenerationPanel({
             } else if (eventType === "section_phase"){
               currentSectionRef.current = streamEvent.section_heading || "";
               generationStore.setPhase(`Generating: ${streamEvent.section_heading}`);
+            } else if (eventType === "llm_retry") {
+              const retryEntryId = `llm-retry-${streamEvent.task_id}-${streamEvent.attempt}-${streamEvent.reason}`;
+              generationStore.setExecutionLog((prev) =>
+                prev.some((e) => e.id === retryEntryId)
+                  ? prev
+                  : [
+                      ...prev,
+                      {
+                        id: retryEntryId,
+                        kind: "llm_retry",
+                        status: "success",
+                        model: streamEvent.model,
+                        reason: streamEvent.reason,
+                        attempt: streamEvent.attempt,
+                        maxAttempts: streamEvent.max_attempts,
+                        waitSeconds: streamEvent.wait_seconds,
+                        turn: currentTurnRef.current,
+                        sectionCurrent: streamEvent.section_heading || currentSectionRef.current,
+                        taskId: streamEvent.task_id || currentTaskIdRef.current,
+                      },
+                    ],
+              );
             } else if (eventType === "tool_started") {
               const currentTurnNumber = currentTurnRef.current;
               const sectionHeading = streamEvent.section_heading || currentSectionRef.current;
@@ -1096,6 +1156,23 @@ export default function GenerationPanel({
               currentTurnRef.current = newTurnNumber;
               currentTaskIdRef.current = streamEvent.task_id || "";
               generationStore.setCurrentTurn(newTurnNumber);
+            } else if (eventType === "assistant_message") {
+              const assistantEntryId = `assistant-${streamEvent.task_id}-${streamEvent.turn}`;
+              const sectionHeading = streamEvent.section_heading || currentSectionRef.current;
+              generationStore.setExecutionLog((prev) => {
+                if (prev.some((e) => e.id === assistantEntryId)) return prev;
+                return [
+                  ...prev,
+                  {
+                    id: assistantEntryId,
+                    kind: "assistant_message",
+                    content: streamEvent.content || "",
+                    turn: streamEvent.turn,
+                    sectionCurrent: sectionHeading,
+                    taskId: streamEvent.task_id || currentTaskIdRef.current,
+                  },
+                ];
+              });
             } else if (eventType === "turn_complete") {
               // Turn completed, stays at current for next tools
             } else if (eventType === "tool_interaction_request") {
@@ -1150,20 +1227,32 @@ export default function GenerationPanel({
               });
               setSidebarTab("execution");
             } else if (eventType === "gen_complete") {
+              const hadFailures = failedSectionsRef.current > 0;
               generationStore.setProgress({
                 progress: 100,
-                phase: `Complete — ${streamEvent.total_sections} sections generated`,
-                status: "complete",
+                phase: hadFailures
+                  ? `Finished — ${failedSectionsRef.current} section(s) failed`
+                  : `Complete — ${streamEvent.total_sections} sections generated`,
+                status: hadFailures ? "error" : "complete",
               });
               // Sync with parent
               if (setSrsDoc) setSrsDoc(generatedContentAccum);
-              if (onGenerationComplete) onGenerationComplete(activeMainTab);
-            
+              // WHY the guard: the orchestrator counts failed tasks as completed and still emits
+              // gen_complete, so showing "Build Complete / all sections successfully generated"
+              // after failures would be a lie. Surface the error banner instead.
+              if (!hadFailures && onGenerationComplete) onGenerationComplete(activeMainTab);
+
             } else if (eventType === "gen_error") {
               generationStore.setError(streamEvent.error);
               generationStore.setProgressStatus("error");
+            } else if (eventType === "task_failed") {
+              // Per-section failure — count it and surface the message instead of dropping it.
+              failedSectionsRef.current += 1;
+              generationStore.setError(streamEvent.error);
             } else if (eventType === "paused") {
-              generationStore.setProgressStatus("paused");
+              // A "paused" event arriving after the user hit Cancel is the backend's stop
+              // mechanism, not a user pause — keep the honest "cancelled" banner, not "Resume".
+              generationStore.setProgressStatus(cancelledRef.current ? "cancelled" : "paused");
             } else if (eventType === "cancel") {
               generationStore.setProgressStatus("cancelled");
             }
@@ -1185,6 +1274,26 @@ export default function GenerationPanel({
    * Regenerate a single section via SSE.
    */
   const handleRegenerateSection = useCallback(async (sectionFilename) => {
+    const projectId = project?.id || project?._id;
+
+    // LLM settings must be configured before regeneration can run
+    if (projectId) {
+      try {
+        const settings = await fetchProjectSettings(projectId);
+        if (!settings?.api_url || !settings?.api_key || !settings?.default_model) {
+          addToast(
+            "LLM is not configured. Open Settings and set API URL, API Key and Model before generating.",
+            "error",
+          );
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to load LLM settings:", err);
+        addToast("Could not verify LLM settings. Configure them in Settings before generating.", "error");
+        return;
+      }
+    }
+
     const abortCtrl = new AbortController();
     regenerateAbortRef.current = abortCtrl;
     setIsRegenerating(true);
@@ -1195,8 +1304,8 @@ export default function GenerationPanel({
     generationStore.setGenerating(true);
     generationStore.setProgressStatus("generating");
 
-    const projectId = project?.id || project?._id;
     const documentType = activeMainTab === "srs" ? "srs" : "sdd";
+    let regeneratedContentAccum = "";
 
     try {
       const response = await fetch(getApiUrl("/regenerate-section-stream"), {
@@ -1228,11 +1337,34 @@ export default function GenerationPanel({
               setRegeneratingSectionProgress(5);
               generationStore.setPhase(`Regenerating: ${sectionFilename.replace(".md", "")}`);
             } else if (eventType === "section_chunk") {
-              generationStore.setDocContent(streamEvent.content || "");
+              regeneratedContentAccum = streamEvent.content || "";
+              generationStore.setDocContent(regeneratedContentAccum);
             } else if (eventType === "progress") {
               setRegeneratingSectionProgress(streamEvent.progress);
             } else if (eventType === "section_phase") {
               generationStore.setPhase(`Regenerating: ${streamEvent.section_heading}`);
+            } else if (eventType === "llm_retry") {
+              const retryEntryId = `llm-retry-${streamEvent.task_id}-${streamEvent.attempt}-${streamEvent.reason}`;
+              generationStore.setExecutionLog((prev) =>
+                prev.some((e) => e.id === retryEntryId)
+                  ? prev
+                  : [
+                      ...prev,
+                      {
+                        id: retryEntryId,
+                        kind: "llm_retry",
+                        status: "success",
+                        model: streamEvent.model,
+                        reason: streamEvent.reason,
+                        attempt: streamEvent.attempt,
+                        maxAttempts: streamEvent.max_attempts,
+                        waitSeconds: streamEvent.wait_seconds,
+                        turn: currentTurnRef.current,
+                        sectionCurrent: streamEvent.section_heading || currentSectionRef.current,
+                        taskId: streamEvent.task_id || currentTaskIdRef.current,
+                      },
+                    ],
+              );
             } else if (eventType === "tool_started") {
               generationStore.setExecutionLog((prev) => {
                 // Deduplicate — skip if entry with this tool_call_id already exists
@@ -1279,6 +1411,22 @@ export default function GenerationPanel({
               currentTurnRef.current = newTurnNumber;
               currentTaskIdRef.current = streamEvent.task_id || "";
               generationStore.setCurrentTurn(newTurnNumber);
+            } else if (eventType === "assistant_message") {
+              const assistantEntryId = `assistant-${streamEvent.task_id}-${streamEvent.turn}`;
+              generationStore.setExecutionLog((prev) => {
+                if (prev.some((e) => e.id === assistantEntryId)) return prev;
+                return [
+                  ...prev,
+                  {
+                    id: assistantEntryId,
+                    kind: "assistant_message",
+                    content: streamEvent.content || "",
+                    turn: streamEvent.turn,
+                    sectionCurrent: streamEvent.section_heading || currentSectionRef.current,
+                    taskId: streamEvent.task_id || currentTaskIdRef.current,
+                  },
+                ];
+              });
             } else if (eventType === "tool_interaction_request") {
               // Update the entry for this tool_call_id to "awaiting_input".
               // Skip entries already in a terminal state (success/error).
@@ -1330,12 +1478,25 @@ export default function GenerationPanel({
               });
               setSidebarTab("execution");
             } else if (eventType === "gen_complete") {
-              generationStore.setError(streamEvent.error);
-              generationStore.setProgressStatus("error");
+              generationStore.setProgressStatus("complete");
+              generationStore.setPhase("Regeneration complete");
+              // Sync the caches the section list / TOC read, and refresh the open
+              // editor if the regenerated section is the one on screen.
+              latestVersionSectionContentsRef.current[sectionFilename] = regeneratedContentAccum;
+              setLatestVersionSections((prev) =>
+                prev.map((section) =>
+                  section.section_filename === sectionFilename
+                    ? { ...section, has_content: regeneratedContentAccum.trim().length > 0 }
+                    : section,
+                ),
+              );
+              if (selectedSectionFile === sectionFilename) {
+                setSelectedSectionContent(regeneratedContentAccum);
+              }
             } else if (eventType === "paused") {
               generationStore.setProgressStatus("paused");
             }
-            
+
           } catch (error) {
             console.error(`Section regeneration error: ${error}`);
           }
@@ -1350,7 +1511,7 @@ export default function GenerationPanel({
       setIsRegenerating(false);
       generationStore.setGenerating(false);
     }
-  }, [project, activeMainTab, generationStore, viewingVersion, sidebarTab, setSidebarTab]);
+  }, [project, activeMainTab, generationStore, viewingVersion, sidebarTab, setSidebarTab, selectedSectionFile]);
 
   /**
    * Submit an interactive tool response back to the backend.
@@ -1395,6 +1556,9 @@ export default function GenerationPanel({
 
   const handleCancel = useCallback(async () => {
     const projectId = project?.id || project?._id;
+    // Set before aborting so a "paused" event already in the read buffer is attributed to the
+    // cancel rather than flipping the banner to "Resume".
+    cancelledRef.current = true;
     if (projectId) {
       fetch(getApiUrl(`/document-generation-cancel/${projectId}`), {
         method: "POST",
@@ -1430,7 +1594,9 @@ export default function GenerationPanel({
         method: "POST",
       }).catch(() => {});
     }
-    handleGenerate();
+    // Continue-after-pause: keep transcripts so completed sections replay and only the
+    // remaining ones generate. "resume" skips the backend's transcript invalidation.
+    handleGenerate("resume");
   }, [handleGenerate]);
 
   const toggleSection = useCallback((path) => {
@@ -1449,14 +1615,18 @@ export default function GenerationPanel({
     let cancelled = false;
     const loadLatest = async () => {
       try {
-        const versions = await fetchDocumentVersions(projectId);
-        if (cancelled || !versions.length) return;
-        const latest = versions[0]; // newest first
+        const versionPayload = await fetchDocumentVersions(projectId);
+        // New response shape: { versions, deleted_versions, templates } —
+        // the generation panel only works with active (non-deleted) versions.
+        const activeVersions = versionPayload.versions || [];
+        if (cancelled || !activeVersions.length) return;
+        const latest = activeVersions[0]; // newest first
         const versionData = await fetchVersionSections(projectId, latest.version);
         if (cancelled) return;
         const documentSections = versionData.sections || [];
         setLatestVersionSections(documentSections);
         let fullDocumentMarkdown = "";
+        const sectionContents = {};
         for (const section of documentSections) {
           if (!section.has_content) continue;
           const content = await fetchVersionContent(
@@ -1464,14 +1634,21 @@ export default function GenerationPanel({
             section.section_filename,
             latest.version,
           );
+          sectionContents[section.section_filename] = content.content;
           fullDocumentMarkdown += content.content + "\n\n";
         }
         if (!cancelled) {
+          latestVersionSectionContentsRef.current = sectionContents;
           setLatestVersionDoc(fullDocumentMarkdown.trim());
-          setSelectedSectionFile(documentSections[0]?.section_filename || null);
+          // Keep the section the user is viewing (e.g. the one just regenerated);
+          // only default to the first section when nothing is selected yet.
+          setSelectedSectionFile((prev) => prev || documentSections[0]?.section_filename || null);
           setSelectedSectionContent("");
           setViewingVersion(latest.version);
-          setTotalVersions(versions.length);
+          setTotalVersions(activeVersions.length);
+          setNavigableVersionNumbers(
+            activeVersions.map((v) => v.version).sort((a, b) => a - b),
+          );
         }
       } catch {
         // ignore - stale fetch
@@ -1483,6 +1660,22 @@ export default function GenerationPanel({
     };
   }, [project, isGenerating]);
 
+  // Content-edit preview routed to a section that isn't loaded yet: the request is
+  // parked here while the section-switch fetch below runs, then dispatched to the
+  // TiptapEditor once its content prop has synced (child effects flush first).
+  const pendingPreviewRef = useRef(null);
+
+  const failPendingPreview = (sectionFilename, reason) => {
+    const pending = pendingPreviewRef.current;
+    if (!pending || pending.section_filename !== sectionFilename) return;
+    pendingPreviewRef.current = null;
+    window.dispatchEvent(
+      new CustomEvent("content-edit-preview-result", {
+        detail: { tool_call_id: pending.tool_call_id, success: false, reason },
+      }),
+    );
+  };
+
   // Fetch selected section content
   useEffect(() => {
     if (isGenerating || !selectedSectionFile || !viewingVersion) return;
@@ -1491,17 +1684,26 @@ export default function GenerationPanel({
     const load = async () => {
       setSelectedSectionContent("");
       try {
-        const sec = latestVersionSections.find(
-          (s) => s.section_filename === selectedSectionFile,
-        );
-        if (!sec?.has_content) return;
+        // WHY no has_content guard: the local sections list is cached from before the user may
+        // have edited an "empty" section (auto-save only touches the backend), so has_content
+        // can be stale false. Always fetch — the backend returns saved edits or "".
         const content = await fetchVersionContent(
           projectId,
           selectedSectionFile,
           viewingVersion,
         );
-        if (!cancelled) setSelectedSectionContent(content.content || "");
+        if (!cancelled) {
+          setSelectedSectionContent(content.content || "");
+          latestVersionSectionContentsRef.current[selectedSectionFile] =
+            content.content || "";
+          // An empty section can never match the proposal's original_text — report the
+          // failure now instead of letting the pending preview hang silently.
+          if (!content.content)
+            failPendingPreview(selectedSectionFile, `Section '${selectedSectionFile}' is empty`);
+        }
       } catch {
+        if (!cancelled)
+          failPendingPreview(selectedSectionFile, `Could not load section '${selectedSectionFile}'`);
         // ignore - stale fetch
       }
     };
@@ -1511,11 +1713,377 @@ export default function GenerationPanel({
     };
   }, [selectedSectionFile, project, isGenerating, viewingVersion]);
 
+  const dispatchEditorPreview = (detail, sourceMarkdown) => {
+    window.dispatchEvent(
+      new CustomEvent("preview-content-edit", {
+        detail: { ...detail, source_markdown: sourceMarkdown ?? null },
+      }),
+    );
+  };
+
+  // Open (or queue) the tabbed preview modal for a resolved proposal. The live editor is
+  // never spliced for this path — the modal renders Current/Proposed from sourceMarkdown.
+  const openEditPreview = (detail, sourceMarkdown) => {
+    setEditPreviewError(null);
+    setActiveEditPreview((current) => {
+      if (current && current.edit.tool_call_id !== detail.tool_call_id) {
+        editPreviewQueueRef.current = [
+          ...editPreviewQueueRef.current.filter(
+            (q) => q.edit.tool_call_id !== detail.tool_call_id,
+          ),
+          { edit: detail, sourceMarkdown },
+        ];
+        return current;
+      }
+      return { edit: detail, sourceMarkdown };
+    });
+  };
+
+  // Router for content-edit preview requests from ChatPanel. The proposal carries
+  // section_filename + version, so the preview can be resolved against the
+  // backend-stored section markdown (source of truth) instead of fuzzy-matching
+  // whatever section happens to be open — and the right section is auto-loaded.
+  useEffect(() => {
+    const handlePreviewRequest = (e) => {
+      const detail = e.detail || {};
+      const target = detail.section_filename;
+      if (!target) {
+        // Legacy payload without a section — let the editor match what's open.
+        dispatchEditorPreview(detail, null);
+        return;
+      }
+
+      const parsedVersion = Number(detail.version);
+      const hasVersion = Number.isInteger(parsedVersion) && parsedVersion > 0;
+      const matchesViewingVersion = hasVersion && parsedVersion === Number(viewingVersion);
+
+      if (target === selectedSectionFile && !hasVersion) {
+        // Right section open, no version pin — use the cached stored markdown.
+        openEditPreview(detail, latestVersionSectionContentsRef.current[target] ?? selectedSectionContent ?? null);
+        return;
+      }
+      if (target === selectedSectionFile && matchesViewingVersion) {
+        // Read from the cache ref, not selectedSectionContent: the listener closure can
+        // hold a stale copy between content refreshes, while the ref is always current.
+        openEditPreview(detail, latestVersionSectionContentsRef.current[target] || selectedSectionContent || null);
+        return;
+      }
+
+      if (target !== selectedSectionFile) {
+        // Park the request and switch sections; the pending-dispatch effect below is the
+        // single dispatcher for this path — dispatching here would race the section-load
+        // content-prop sync, which would clobber the overlay.
+        pendingPreviewRef.current = detail;
+        setSelectedSectionFile(target);
+        return;
+      }
+
+      // Same section, but proposal pinned to a different version — fetch that exact
+      // version's markdown as the match source. No section switch, so the content prop
+      // stays put and the overlay can't be clobbered.
+      const projectId = project?.id || project?._id;
+      fetchVersionContent(projectId, target, parsedVersion)
+        .then((content) => {
+          const markdown = content.content || "";
+          latestVersionSectionContentsRef.current[target] = markdown;
+          if (markdown) {
+            openEditPreview(detail, markdown);
+          } else {
+            window.dispatchEvent(
+              new CustomEvent("content-edit-preview-result", {
+                detail: {
+                  tool_call_id: detail.tool_call_id,
+                  success: false,
+                  reason: `Section '${target}' v${parsedVersion} is empty`,
+                },
+              }),
+            );
+          }
+        })
+        .catch(() => {
+          window.dispatchEvent(
+            new CustomEvent("content-edit-preview-result", {
+              detail: {
+                tool_call_id: detail.tool_call_id,
+                success: false,
+                reason: `Could not load section '${target}' v${parsedVersion}`,
+              },
+            }),
+          );
+        });
+    };
+    window.addEventListener("content-edit-preview-request", handlePreviewRequest);
+    return () =>
+      window.removeEventListener("content-edit-preview-request", handlePreviewRequest);
+    // selectedSectionContent intentionally read without being a dep: the router acts on
+    // events, and re-registering on every keystroke-refresh would churn listeners.
+  }, [selectedSectionFile, viewingVersion, project]);
+
+  // Fire a parked preview once its section content has loaded AND the editor's content
+  // prop has synced (child effects flush before parent effects in the same commit).
+  useEffect(() => {
+    const pending = pendingPreviewRef.current;
+    if (!pending || !selectedSectionContent) return;
+    if (pending.section_filename !== selectedSectionFile) return;
+    pendingPreviewRef.current = null;
+    let cancelled = false;
+    const parsedVersion = Number(pending.version);
+    const hasVersion = Number.isInteger(parsedVersion) && parsedVersion > 0;
+    if (hasVersion && parsedVersion !== Number(viewingVersion)) {
+      // Proposal pinned to a section version other than the one on screen — fetch that
+      // exact version's markdown so the diff matches what the model proposed against.
+      const projectId = project?.id || project?._id;
+      fetchVersionContent(projectId, pending.section_filename, parsedVersion)
+        .then((content) => {
+          if (cancelled) return;
+          const markdown = content.content || "";
+          latestVersionSectionContentsRef.current[pending.section_filename] = markdown;
+          if (markdown) {
+            openEditPreview(pending, markdown);
+          } else {
+            window.dispatchEvent(
+              new CustomEvent("content-edit-preview-result", {
+                detail: {
+                  tool_call_id: pending.tool_call_id,
+                  success: false,
+                  reason: `Section '${pending.section_filename}' v${parsedVersion} is empty`,
+                },
+              }),
+            );
+          }
+        })
+        .catch(() => {
+          if (!cancelled)
+            window.dispatchEvent(
+              new CustomEvent("content-edit-preview-result", {
+                detail: {
+                  tool_call_id: pending.tool_call_id,
+                  success: false,
+                  reason: `Could not load section '${pending.section_filename}' v${parsedVersion}`,
+                },
+              }),
+            );
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    openEditPreview(pending, selectedSectionContent);
+  }, [selectedSectionContent, selectedSectionFile, viewingVersion, project]);
+
+  const closeEditPreview = useCallback(() => {
+    const next = editPreviewQueueRef.current.shift() || null;
+    setActiveEditPreview(next);
+    setEditPreviewError(null);
+    setEditPreviewSaving(false);
+  }, []);
+
+  // Auto-switch: opening a preview lands on the Edit Preview tab; closing returns
+  // to the editor tab.
+  useEffect(() => {
+    setEditorPaneTab(activeEditPreview ? "preview" : "editor");
+  }, [activeEditPreview]);
+
+  // If the modal's proposal can't be matched against its source markdown, report the
+  // failure to the chat card (it resets its Preview toggle) and dismiss the modal.
+  useEffect(() => {
+    if (!activeEditPreview) return;
+    const { edit, sourceMarkdown } = activeEditPreview;
+    if (edit?.original_text && findBestMatchInMarkdown(edit.original_text, sourceMarkdown)) {
+      return;
+    }
+    window.dispatchEvent(
+      new CustomEvent("content-edit-preview-result", {
+        detail: {
+          tool_call_id: edit?.tool_call_id,
+          success: false,
+          reason: edit?.original_text
+            ? "Original text not found in the stored section"
+            : "Proposal is missing original/proposed text",
+        },
+      }),
+    );
+    closeEditPreview();
+  }, [activeEditPreview, closeEditPreview]);
+
+  const handleEditPreviewReject = useCallback(() => {
+    const { edit } = activeEditPreview || {};
+    if (edit && onInteractionSubmit && currentSessionId) {
+      onInteractionSubmit(currentSessionId, edit.tool_call_id, { status: "rejected" });
+    }
+    closeEditPreview();
+  }, [activeEditPreview, onInteractionSubmit, currentSessionId, closeEditPreview]);
+
+  // Shared persist sequence for an accepted content_edit proposal: locate the
+  // original_text in the STORED section markdown (never the live editor — it may
+  // not even be showing the proposal's section), replace it, and write through
+  // updateVersionContent. Used by both the preview modal Accept and the chat card
+  // Accept so "accepted" always means the file was actually written.
+  const persistAcceptedContentEdit = useCallback(async (acceptedEdit) => {
+    const projectId = project?.id || project?._id;
+    const parsedVersion = Number(acceptedEdit?.version);
+    const effectiveVersion =
+      Number.isInteger(parsedVersion) && parsedVersion > 0
+        ? parsedVersion
+        : Number(viewingVersion);
+    if (!acceptedEdit || !projectId || !acceptedEdit.section_filename || !effectiveVersion) {
+      return null;
+    }
+
+    let storedSectionMarkdown = acceptedEdit.sourceMarkdown ?? null;
+    if (!storedSectionMarkdown) {
+      const storedVersionContent = await fetchVersionContent(
+        projectId,
+        acceptedEdit.section_filename,
+        effectiveVersion,
+      );
+      storedSectionMarkdown = storedVersionContent?.content || "";
+    }
+    const matchedSegment = findBestMatchInMarkdown(acceptedEdit.original_text, storedSectionMarkdown);
+    if (!matchedSegment) return null;
+
+    const updatedSectionMarkdown = storedSectionMarkdown.replace(matchedSegment, acceptedEdit.proposed_text);
+    await updateVersionContent(projectId, acceptedEdit.section_filename, effectiveVersion, updatedSectionMarkdown);
+
+    // Sync the same caches the auto-save path maintains, so the section list label,
+    // TOC cache, and any open editor view reflect the persisted edit.
+    latestVersionSectionContentsRef.current[acceptedEdit.section_filename] = updatedSectionMarkdown;
+    setLatestVersionSections((prev) =>
+      prev.map((section) =>
+        section.section_filename === acceptedEdit.section_filename
+          ? { ...section, has_content: updatedSectionMarkdown.trim().length > 0 }
+          : section,
+      ),
+    );
+    // TiptapEditor syncs its content prop with emitUpdate:false when not focused.
+    if (acceptedEdit.section_filename === selectedSectionFile) {
+      setSelectedSectionContent(updatedSectionMarkdown);
+    }
+    return updatedSectionMarkdown;
+  }, [project, viewingVersion, selectedSectionFile]);
+
+  const handleEditPreviewAccept = useCallback(async () => {
+    const { edit, sourceMarkdown } = activeEditPreview || {};
+    setEditPreviewSaving(true);
+    setEditPreviewError(null);
+    try {
+      const updatedMarkdown = await persistAcceptedContentEdit(
+        edit ? { ...edit, sourceMarkdown } : null,
+      );
+      if (!updatedMarkdown) {
+        setEditPreviewError("Could not locate the original text in the stored section");
+        return;
+      }
+
+      if (onInteractionSubmit && currentSessionId) {
+        onInteractionSubmit(currentSessionId, edit.tool_call_id, {
+          status: "accepted",
+          ui_type: "content_edit",
+          section_filename: edit.section_filename,
+          proposed_text: edit.proposed_text,
+          block_number: edit.block_number,
+        });
+      }
+      closeEditPreview();
+    } catch (acceptError) {
+      setEditPreviewError(
+        `Failed to save: ${acceptError?.message || "unknown error"}`,
+      );
+    } finally {
+      setEditPreviewSaving(false);
+    }
+  }, [activeEditPreview, persistAcceptedContentEdit, onInteractionSubmit, currentSessionId, closeEditPreview]);
+
+  // Chat card Accept: persist through the same sequence as the modal Accept, then
+  // resolve the interaction. The old card path relied on TiptapEditor being open on
+  // the proposal's section, so accepting with a different section on screen
+  // silently dropped the edit while still reporting accepted.
+  useEffect(() => {
+    const handleCardContentEditAccept = async (e) => {
+      const acceptedEdit = e.detail || {};
+      try {
+        const updatedMarkdown = await persistAcceptedContentEdit(acceptedEdit);
+        if (!updatedMarkdown) {
+          window.dispatchEvent(
+            new CustomEvent("content-edit-preview-result", {
+              detail: {
+                tool_call_id: acceptedEdit.tool_call_id,
+                success: false,
+                reason: "Original text not found in the stored section",
+              },
+            }),
+          );
+          return;
+        }
+        if (onInteractionSubmit && currentSessionId) {
+          onInteractionSubmit(currentSessionId, acceptedEdit.tool_call_id, {
+            status: "accepted",
+            ui_type: "content_edit",
+            section_filename: acceptedEdit.section_filename,
+            proposed_text: acceptedEdit.proposed_text,
+            block_number: acceptedEdit.block_number,
+          });
+        }
+        // If the preview modal is showing this same proposal, close it now that
+        // the edit is persisted.
+        if (activeEditPreview?.edit?.tool_call_id === acceptedEdit.tool_call_id) {
+          closeEditPreview();
+        }
+      } catch (cardAcceptError) {
+        console.error("Card content edit accept failed:", cardAcceptError);
+        window.dispatchEvent(
+          new CustomEvent("content-edit-preview-result", {
+            detail: {
+              tool_call_id: acceptedEdit.tool_call_id,
+              success: false,
+              reason: `Failed to save: ${cardAcceptError?.message || "unknown error"}`,
+            },
+          }),
+        );
+      }
+    };
+    window.addEventListener("card-content-edit-accept", handleCardContentEditAccept);
+    return () =>
+      window.removeEventListener("card-content-edit-accept", handleCardContentEditAccept);
+  }, [persistAcceptedContentEdit, onInteractionSubmit, currentSessionId, closeEditPreview, activeEditPreview]);
+
+  // Card Hide/Reject dispatch apply-content-edit-reject and card Accept dispatches
+  // apply-content-edit-accept; if the event targets the open preview, close it (and
+  // drain the queue). Hide must not resolve the interaction — the card's
+  // Accept/Reject paths already call onInteractionSubmit themselves, so this listener
+  // only closes. The card dispatches lack tool_call_id, hence the
+  // block_number/original_text fallback.
+  useEffect(() => {
+    const handleClose = (e) => {
+      const d = e.detail || {};
+      setActiveEditPreview((current) => {
+        if (!current) return current;
+        const matches = d.tool_call_id
+          ? d.tool_call_id === current.edit.tool_call_id
+          : d.block_number === current.edit.block_number &&
+            d.original_text === current.edit.original_text;
+        if (!matches) return current;
+        editPreviewQueueRef.current = editPreviewQueueRef.current.filter(
+          (q) => q.edit.tool_call_id !== current.edit.tool_call_id,
+        );
+        return editPreviewQueueRef.current.shift() || null;
+      });
+      setEditPreviewError(null);
+    };
+    window.addEventListener("apply-content-edit-reject", handleClose);
+    window.addEventListener("apply-content-edit-accept", handleClose);
+    return () => {
+      window.removeEventListener("apply-content-edit-reject", handleClose);
+      window.removeEventListener("apply-content-edit-accept", handleClose);
+    };
+  }, []);
+
   // Switch to a specific version
   const loadVersion = useCallback(
     async (version) => {
       if (isGenerating || !project) return;
       const projectId = project.id || project._id;
+      latestLoadVersionRef.current = version;
       let cancelled = false;
       try {
         const versionData = await fetchVersionSections(projectId, version);
@@ -1526,6 +2094,7 @@ export default function GenerationPanel({
         setSelectedSectionFile(documentSections[0]?.section_filename || null);
         setSelectedSectionContent("");
         let fullDocumentMarkdown = "";
+        const sectionContents = {};
         for (const section of documentSections) {
           if (!section.has_content) continue;
           const content = await fetchVersionContent(
@@ -1533,9 +2102,11 @@ export default function GenerationPanel({
             section.section_filename,
             version,
           );
+          sectionContents[section.section_filename] = content.content;
           fullDocumentMarkdown += content.content + "\n\n";
         }
-        if (!cancelled) {
+        if (!cancelled && latestLoadVersionRef.current === version) {
+          latestVersionSectionContentsRef.current = sectionContents;
           setLatestVersionDoc(fullDocumentMarkdown.trim());
           setViewingVersion(version);
         }
@@ -1546,15 +2117,88 @@ export default function GenerationPanel({
     [project, isGenerating],
   );
 
+  // Return the neighbouring active version in the given direction (-1 = previous,
+  // +1 = next), skipping soft-deleted versions. If the version currently being
+  // viewed was itself deleted after it was loaded, jump to the nearest active
+  // version in the requested direction instead of getting stuck.
+  const getAdjacentNavigableVersion = useCallback(
+    (direction) => {
+      if (!navigableVersionNumbers.length || !viewingVersion) return null;
+      const currentIndex = navigableVersionNumbers.indexOf(viewingVersion);
+      if (currentIndex !== -1) {
+        return navigableVersionNumbers[currentIndex + direction] ?? null;
+      }
+      if (direction > 0) {
+        return navigableVersionNumbers.find((v) => v > viewingVersion) ?? null;
+      }
+      const activeVersionsBelow = navigableVersionNumbers.filter(
+        (v) => v < viewingVersion,
+      );
+      return activeVersionsBelow.length
+        ? activeVersionsBelow[activeVersionsBelow.length - 1]
+        : null;
+    },
+    [navigableVersionNumbers, viewingVersion],
+  );
+
   const goPreviousVersion = useCallback(() => {
-    if (!viewingVersion || viewingVersion <= 1) return;
-    loadVersion(viewingVersion - 1);
-  }, [viewingVersion, loadVersion]);
+    const previousVersion = getAdjacentNavigableVersion(-1);
+    if (previousVersion !== null) loadVersion(previousVersion);
+  }, [getAdjacentNavigableVersion, loadVersion]);
 
   const goNextVersion = useCallback(() => {
-    if (!viewingVersion || viewingVersion >= totalVersions) return;
-    loadVersion(viewingVersion + 1);
-  }, [viewingVersion, totalVersions, loadVersion]);
+    const nextVersion = getAdjacentNavigableVersion(1);
+    if (nextVersion !== null) loadVersion(nextVersion);
+  }, [getAdjacentNavigableVersion, loadVersion]);
+
+  const versionBarRef = useRef(null);
+  const latestLoadVersionRef = useRef(null);
+
+  // Map a pointer x-position to the version at that slot of the ACTIVE version
+  // list (index-based, so soft-deleted versions are never scrubbed onto).
+  const versionFromPointer = useCallback(
+    (clientX) => {
+      const el = versionBarRef.current;
+      if (!el || !navigableVersionNumbers.length) return null;
+      const rect = el.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      const positionIndex = Math.round(ratio * (navigableVersionNumbers.length - 1));
+      return navigableVersionNumbers[positionIndex] ?? null;
+    },
+    [navigableVersionNumbers],
+  );
+
+  const handleVersionBarPointerDown = (e) => {
+    if (isGenerating || !viewingVersion) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setScrubVersion(versionFromPointer(e.clientX));
+  };
+
+  const handleVersionBarPointerMove = (e) => {
+    if (scrubVersion === null) return;
+    const v = versionFromPointer(e.clientX);
+    if (v !== null && v !== scrubVersion) setScrubVersion(v);
+  };
+
+  const handleVersionBarPointerEnd = () => {
+    if (scrubVersion === null) return;
+    if (scrubVersion !== viewingVersion) loadVersion(scrubVersion);
+    setScrubVersion(null);
+  };
+
+  // While dragging the version bar, preview the scrub target; otherwise the loaded version.
+  const displayedVersion = scrubVersion ?? viewingVersion ?? 0;
+
+  /* 1-based position of the displayed version within the active list. Used for
+     the slider fill/thumb so gaps from soft-deleted versions don't distort the
+     bar (raw version numbers are no longer contiguous 1..totalVersions). If the
+     displayed version isn't in the list (deleted while viewing), interpolate by
+     counting how many active versions sit below it. */
+  const displayedVersionPosition = useMemo(() => {
+    const positionIndex = navigableVersionNumbers.indexOf(displayedVersion);
+    if (positionIndex !== -1) return positionIndex + 1;
+    return navigableVersionNumbers.filter((v) => v < displayedVersion).length;
+  }, [navigableVersionNumbers, displayedVersion]);
 
   // Full document for preview/export (always the complete document, never section-specific)
   const fullDoc = isGenerating
@@ -1565,6 +2209,12 @@ export default function GenerationPanel({
   const displayDoc = isGenerating
     ? generatedDocContent
     : selectedSectionContent;
+
+  // Whether the editor pane should render: an empty section (not yet generated) still gets an
+  // editable editor — only the no-section-selected state shows the placeholder.
+  const hasDocumentView = isGenerating
+    ? Boolean(generatedDocContent)
+    : Boolean(selectedSectionFile);
 
   // TOC heading extraction from the latest version document
   const tocHeadings = latestVersionDoc
@@ -1608,14 +2258,50 @@ export default function GenerationPanel({
     });
   }, []);
 
-  const scrollToTocHeading = useCallback((slug) => {
-    const editor = containerRef.current?.querySelector('.prose');
-    if (editor) {
-      const id = slug.toLowerCase().replace(/[^\w]+/g, '-');
-      const el = editor.querySelector(`[id="${id}"]`) || editor.querySelector(`[id="${slug}"]`);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // The document renders in TiptapEditor (.ProseMirror) whose headings carry no ids, so
+  // match by exact text instead of the slug/`[id=...]` lookup that could never hit.
+  const scrollEditorToHeading = useCallback((headingText) => {
+    const editorRoot = containerRef.current?.querySelector('.ProseMirror');
+    if (!editorRoot) return false;
+    const headingElements = editorRoot.querySelectorAll('h1, h2, h3, h4, h5, h6');
+    for (const headingElement of headingElements) {
+      if (headingElement.textContent?.trim() === headingText) {
+        headingElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return true;
+      }
     }
+    return false;
   }, []);
+
+  const scrollToTocHeading = useCallback((headingText) => {
+    if (scrollEditorToHeading(headingText)) return;
+    // Heading lives in a section that isn't loaded in the editor yet — find its owner
+    // in the cached markdown, switch sections, and let the pending effect scroll.
+    const owner = latestVersionSections.find((sec) => {
+      const markdown = latestVersionSectionContentsRef.current[sec.section_filename];
+      return (
+        markdown &&
+        markdown.split('\n').some((line) => {
+          const match = line.match(/^#{1,6}\s+(.*)/);
+          return match && match[1].trim() === headingText;
+        })
+      );
+    });
+    if (!owner || owner.section_filename === selectedSectionFile) return;
+    pendingTocHeadingRef.current = headingText;
+    setSelectedSectionFile(owner.section_filename);
+  }, [scrollEditorToHeading, latestVersionSections, selectedSectionFile]);
+
+  // After a TOC-triggered section switch loads its content, scroll to the target heading.
+  useEffect(() => {
+    if (!pendingTocHeadingRef.current || isGenerating || !selectedSectionContent) return;
+    const headingText = pendingTocHeadingRef.current;
+    const timer = setTimeout(() => {
+      pendingTocHeadingRef.current = null;
+      scrollEditorToHeading(headingText);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [selectedSectionContent, isGenerating, scrollEditorToHeading]);
 
   return (
     <div ref={containerRef} className="flex flex-1 overflow-hidden select-none">
@@ -1698,6 +2384,19 @@ export default function GenerationPanel({
                       <div className="text-[9px] text-[#94a3b8]">
                         {sec.has_content ? "Generated" : "Empty"}
                       </div>
+                      <div className="flex items-center gap-1 justify-end min-w-0">
+                      {mentionedFiles?.some((m) => m.sectionFilename === sec.section_filename) && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => { e.stopPropagation(); setMentionedFiles?.((prev) => prev.filter((m) => m.sectionFilename !== sec.section_filename)); }}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setMentionedFiles?.((prev) => prev.filter((m) => m.sectionFilename !== sec.section_filename)); } }}
+                          title="Mentioned in chat — click to remove"
+                          className="inline-flex items-center justify-center rounded-sm p-0.5 bg-violet-100 text-violet-600 border border-violet-200 cursor-pointer shrink-0"
+                        >
+                          <AtSign size={11} />
+                        </span>
+                      )}
                       {(() => {
                         const secBlocks = selectedChatBlocks?.filter(b => b.section === sec.section_filename) || [];
                         if (secBlocks.length === 0) return null;
@@ -1729,6 +2428,7 @@ export default function GenerationPanel({
                           </div>
                         );
                       })()}
+                      </div>
                     </div>
                   </div>
                 </button>
@@ -1754,12 +2454,12 @@ export default function GenerationPanel({
               <span className="text-[10px] font-mono text-gray-400 shrink-0">
                 {sectionCurrent}/{sectionTotal}
               </span>
-              <button
+              {/*<button
                 onClick={handlePause}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer shrink-0 text-blue-600 border border-primary-200 bg-primary-50 hover:bg-primary-100"
               >
                 <Pause size={9} className="text-blue-400" /> Pause
-              </button>
+              </button> */}
               <button
                 onClick={handleCancel}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer shrink-0 text-red-600 border border-red-200 bg-red-50 hover:bg-red-100"
@@ -1804,7 +2504,7 @@ export default function GenerationPanel({
         )}
 
         {/* Pause Status */}
-        {status === "paused" && (
+        {/* {status === "paused" && (
           <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 flex-shrink-0">
             <div className="flex items-center gap-2">
               <span className="text-xs text-amber-700">
@@ -1819,7 +2519,7 @@ export default function GenerationPanel({
               </button>
             </div>
           </div>
-        )}
+        )} */}
 
         {/* Document View */}
         <div className="flex-1 overflow-hidden bg-[#fafafa] relative flex flex-col">
@@ -1848,30 +2548,90 @@ export default function GenerationPanel({
             </div>
           )}
 
-          {/* Edit Actions Indicator */}
-          <EditActionsBar
-            chatMessages={chatMessages}
-            onInteractionSubmit={onInteractionSubmit}
-            currentSessionId={currentSessionId}
-          />
-
-          {displayDoc ? (
-            <TiptapEditor
-              content={displayDoc}
-              onChange={handleVersionContentChange}
-              project={project}
-              requirementId="SRS_DOC"
-              className="h-full border-none shadow-none rounded-none"
-              versionNumber={viewingVersion}
-              selectedChatBlocks={selectedChatBlocks}
-              setSelectedChatBlocks={setSelectedChatBlocks}
-              activeSection={selectedSectionFile}
-              focusedChatBlock={focusedChatBlock}
-              setFocusedChatBlock={setFocusedChatBlock}
-              enableChatContext={true}
-              useDocumentSync={false}
-              documentId={selectedSectionFile}
-            />
+          {hasDocumentView ? (
+            <>
+              {/* While an edit preview is open, the pane becomes a two-tab strip:
+                  the section's live editor and the Current/Proposed preview. The
+                  editor stays mounted (hidden) so unsaved state survives switching. */}
+              {activeEditPreview && (
+                <div className="flex items-end gap-1 px-3 pt-1.5 bg-[#fafbfc] border-b border-gray-200 shrink-0">
+                  <button
+                    onClick={() => setEditorPaneTab("editor")}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-t-md border border-b-0 transition-colors cursor-pointer ${
+                      editorPaneTab === "editor"
+                        ? "bg-white border-gray-200 text-blue-600"
+                        : "bg-transparent border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    <FileText size={11} />
+                    <span className="truncate max-w-[180px]">
+                      {selectedSectionFile?.replace(/\.md$/, "") || "Editor"}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setEditorPaneTab("preview")}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-t-md border border-b-0 transition-colors cursor-pointer ${
+                      editorPaneTab === "preview"
+                        ? "bg-white border-gray-200 text-emerald-600"
+                        : "bg-transparent border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    <Eye size={11} />
+                    Edit Preview
+                    {activeEditPreview.edit?.block_number != null && (
+                      <span className="px-1 py-0.5 rounded-sm bg-gray-100 border border-gray-200 text-[9px] text-gray-500 font-bold">
+                        B{activeEditPreview.edit.block_number}
+                      </span>
+                    )}
+                    {editPreviewSaving && (
+                      <Loader2 size={10} className="animate-spin text-emerald-500" />
+                    )}
+                  </button>
+                  <div className="flex-1" />
+                  <button
+                    onClick={closeEditPreview}
+                    disabled={editPreviewSaving}
+                    className="p-1 mb-1 hover:bg-gray-200 rounded text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-40 shrink-0"
+                    title="Dismiss preview"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              )}
+              <div
+                className={`flex-1 flex min-h-0 overflow-hidden ${
+                  editorPaneTab === "preview" ? "hidden" : ""
+                }`}
+              >
+                <TiptapEditor
+                  content={displayDoc}
+                  onChange={handleVersionContentChange}
+                  project={project}
+                  requirementId="SRS_DOC"
+                  className="h-full w-full border-none shadow-none rounded-none"
+                  versionNumber={viewingVersion}
+                  selectedChatBlocks={selectedChatBlocks}
+                  setSelectedChatBlocks={setSelectedChatBlocks}
+                  activeSection={selectedSectionFile}
+                  focusedChatBlock={focusedChatBlock}
+                  setFocusedChatBlock={setFocusedChatBlock}
+                  enableChatContext={true}
+                  useDocumentSync={false}
+                  documentId={selectedSectionFile}
+                />
+              </div>
+              {activeEditPreview && editorPaneTab === "preview" && (
+                <ContentEditPreviewPanel
+                  key={activeEditPreview.edit?.tool_call_id ?? activeEditPreview.edit?.block_number ?? "edit"}
+                  edit={activeEditPreview.edit}
+                  sourceMarkdown={activeEditPreview.sourceMarkdown}
+                  saving={editPreviewSaving}
+                  error={editPreviewError}
+                  onAccept={handleEditPreviewAccept}
+                  onReject={handleEditPreviewReject}
+                />
+              )}
+            </>
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center text-gray-400 p-10">
               <Zap size={32} className="opacity-30 mb-4" />
@@ -1919,7 +2679,7 @@ export default function GenerationPanel({
               </button>
             ) : (
               <button
-                onClick={handleGenerate}
+                onClick={() => handleGenerate("fresh")}
                 disabled={isGenActive || isGenerating}
                 className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-blue-600 text-white text-xs font-semibold rounded-xl shadow-sm hover:bg-blue-700 hover:shadow disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 cursor-pointer"
               >
@@ -1943,7 +2703,12 @@ export default function GenerationPanel({
               </button>
               <button
                 onClick={() => setShowExport(true)}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold rounded-lg shadow-sm hover:bg-gray-50 hover:border-gray-300 transition-all duration-200 cursor-pointer"
+                disabled={isGenerating}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold rounded-lg shadow-sm transition-all duration-200 ${
+                  isGenerating
+                    ? "opacity-50 cursor-not-allowed"
+                    : "hover:bg-gray-50 hover:border-gray-300 cursor-pointer"
+                }`}
               >
                 <Download size={13} />
                 Export
@@ -1996,44 +2761,65 @@ export default function GenerationPanel({
             {sidebarTab === "outline" ? (
               viewingVersion && totalVersions > 0 ? (
                 <>
-                  <div className="px-3 py-2.5 rounded-xl bg-gray-50/80 border border-gray-100 mb-4 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+                  <div className="rounded-xl bg-gray-50/80 border border-gray-100 mb-4 overflow-hidden">
+                    <div className="flex items-center gap-2 px-3 py-2.5">
                       <div className="p-1 bg-white rounded-md shadow-sm border border-gray-100">
-                        <ChevronRight size={12} className="text-gray-600" />
+                        <Layers size={12} className="text-gray-600" />
                       </div>
                       <span className="font-bold tracking-wide uppercase text-[10px] text-gray-600">
                         Versions
                       </span>
+                      <span className="flex-1" />
+                      <span className="px-1.5 py-0.5 rounded-md bg-blue-50 border border-blue-100 text-[9px] text-blue-600 font-bold">
+                        v{viewingVersion} / {totalVersions}
+                      </span>
                     </div>
-                    <span className="px-1.5 py-0.5 rounded-md bg-blue-50 border border-blue-100 text-[9px] text-blue-600 font-bold">
-                      v{viewingVersion} / {totalVersions}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-gray-700">
-                      Version {viewingVersion}
-                    </span>
-                    <span className="text-[9px] text-gray-400 ml-1">
-                      of {totalVersions}
-                    </span>
-                    <span className="flex-1" />
-                    <button
-                      onClick={goPreviousVersion}
-                      disabled={viewingVersion <= 1}
-                      className="flex items-center justify-center w-8 h-8 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      title="Previous version"
-                    >
-                      <ChevronLeft size={14} className="text-gray-600" />
-                    </button>
-                    <button
-                      onClick={goNextVersion}
-                      disabled={viewingVersion >= totalVersions}
-                      className="flex items-center justify-center w-8 h-8 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      title="Next version"
-                    >
-                      <ChevronRight size={14} className="text-gray-600" />
-                    </button>
+                    <div className="flex items-center gap-2 px-3 pb-3">
+                      <button
+                        onClick={goPreviousVersion}
+                        disabled={getAdjacentNavigableVersion(-1) === null}
+                        className="flex items-center justify-center w-8 h-8 rounded-lg bg-white border border-gray-200 shadow-sm hover:border-blue-200 hover:bg-blue-50/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-gray-200 transition-all"
+                        title="Previous version"
+                      >
+                        <ChevronLeft size={14} className="text-gray-600" />
+                      </button>
+                      <div className="flex-1 flex flex-col items-center gap-1.5">
+                        <div className="text-[13px] font-bold text-gray-800 leading-none">
+                          Version {displayedVersion}
+                          <span className="text-[10px] font-semibold text-gray-400 ml-1">
+                            / {totalVersions}
+                          </span>
+                        </div>
+                        <div
+                          ref={versionBarRef}
+                          onPointerDown={handleVersionBarPointerDown}
+                          onPointerMove={handleVersionBarPointerMove}
+                          onPointerUp={handleVersionBarPointerEnd}
+                          onPointerCancel={handleVersionBarPointerEnd}
+                          className="relative w-full py-2 -my-2 cursor-pointer touch-none select-none"
+                          title="Drag to change version"
+                        >
+                          <div className="w-full h-1 rounded-full bg-gray-200/80 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full bg-blue-500 ${scrubVersion === null ? "transition-all duration-300" : ""}`}
+                              style={{ width: `${totalVersions ? Math.round((displayedVersionPosition / totalVersions) * 100) : 0}%` }}
+                            />
+                          </div>
+                          <div
+                            className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-blue-500 shadow-md ${scrubVersion === null ? "transition-all duration-300" : "scale-110"} pointer-events-none`}
+                            style={{ left: `${totalVersions ? Math.round((displayedVersionPosition / totalVersions) * 100) : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                      <button
+                        onClick={goNextVersion}
+                        disabled={getAdjacentNavigableVersion(1) === null}
+                        className="flex items-center justify-center w-8 h-8 rounded-lg bg-white border border-gray-200 shadow-sm hover:border-blue-200 hover:bg-blue-50/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-gray-200 transition-all"
+                        title="Next version"
+                      >
+                        <ChevronRight size={14} className="text-gray-600" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* TOC Toggle */}
@@ -2082,7 +2868,7 @@ export default function GenerationPanel({
                                 <div className="w-[18px] flex-shrink-0" />
                               )}
                               <span
-                                onClick={() => scrollToTocHeading(tocHeadingItem.slug)}
+                                onClick={() => scrollToTocHeading(tocHeadingItem.text)}
                                 className={`text-xs ${tocHeadingItem.level === 1 ? 'font-bold text-gray-700' : 'text-gray-500'} hover:text-blue-600 cursor-pointer transition-colors leading-tight py-1`}
                                 title={tocHeadingItem.text}
                               >
@@ -2110,6 +2896,7 @@ export default function GenerationPanel({
                 currentTurn={currentTurn}
                 currentSection={phase
                   .replace("Generating: ", "")
+                  .replace("Regenerating: ", "")
                   .replace("Completed: ", "")}
                 isGenerating={isGenerating}
                 onSubmitInteraction={handleSubmitInteraction}

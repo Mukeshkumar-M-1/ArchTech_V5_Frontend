@@ -15,8 +15,6 @@ import usePendingDeleteStore from '../../store/pendingDeleteStore';
  * @param {() => void} props.onAddClick
  * @param {boolean} props.loading
  * @param {boolean} [props.templateLocked] - Whether the template type is locked.
- * @param {boolean} [props.showTemplateType] - Whether to show the template type badge.
- * @param {string} [props.templateName] - The name of the currently selected template.
  */
 export default function SectionList({
   sections,
@@ -26,8 +24,6 @@ export default function SectionList({
   onAddClick,
   loading,
   templateLocked,
-  showTemplateType,
-  templateName = 'Standard',
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const pendingDelete = usePendingDeleteStore();
@@ -43,7 +39,7 @@ export default function SectionList({
   return (
     <div className={`border-r border-slate-100 bg-white/50 backdrop-blur-md flex-shrink-0 overflow-y-auto flex flex-col z-10 relative transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'}`}>
       {/* Header */}
-      <div className={`flex h-16 items-center border-b border-slate-100 bg-white/80 backdrop-blur-xl sticky top-0 z-20 overflow-hidden ${isCollapsed ? 'px-4 py-5 justify-center' : 'px-4 py-5 justify-between'}`}>
+      <div className={`flex h-16 items-center border-b border-slate-100 bg-white sticky top-0 z-30 overflow-hidden ${isCollapsed ? 'px-4 py-5 justify-center' : 'px-4 py-5 justify-between'}`}>
         {!isCollapsed && (
           <span className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] flex items-center gap-2 shrink-0">
             <BookOpen size={14} className="text-primary-500" />
@@ -115,11 +111,6 @@ export default function SectionList({
                   </div>
                   {!isCollapsed && (
                     <div className="flex flex-col overflow-hidden min-w-0 flex-1">
-                      {showTemplateType && (
-                        <span className="text-[9px] text-slate-400 font-medium">
-                          {templateName}
-                        </span>
-                      )}
                       <span className={`text-[9px] font-black uppercase tracking-widest mb-0.5 transition-colors ${
                          isSelected ? 'text-primary-500' : 'text-slate-400'
                       }`}>

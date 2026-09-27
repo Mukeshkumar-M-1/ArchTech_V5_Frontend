@@ -32,11 +32,14 @@ export default function SettingsDialog({ project, onClose }) {
         return fetchAvailableModels(projectId).then((modelsList) => {
           if (!isMounted || !Array.isArray(modelsList) || modelsList.length === 0) return;
           setAvailableModels(modelsList);
-          setSettingsForm((previousForm) =>
-            previousForm.default_model
-              ? previousForm
-              : { ...previousForm, default_model: modelsList[0].key }
-          );
+          setSettingsForm((previousForm) => {
+            const isSavedModelStillListed = modelsList.some(
+              (model) => model.key === previousForm.default_model
+            );
+            // Stale saved model (removed/renamed on the API) — fall back to the first one.
+            if (previousForm.default_model && isSavedModelStillListed) return previousForm;
+            return { ...previousForm, default_model: modelsList[0].key };
+          });
         });
       })
       .catch((fetchError) => {
@@ -72,6 +75,32 @@ export default function SettingsDialog({ project, onClose }) {
       return;
     }
 
+    // Placeholder formats: "https://llmgw.datapatterns.co.in/v1" and "sk-dpllm-..."
+    if (!/^https:\/\/[^\s]+\.[^\s]+/.test(trimmedApiUrl)) {
+      addToast('API URL must be a valid https:// URL, e.g. https://llmgw.datapatterns.co.in/v1', 'error');
+      return;
+    }
+    if (!/^sk-\S+$/.test(trimmedApiKey)) {
+      addToast('API Key must start with "sk-", e.g. sk-dpllm-...', 'error');
+      return;
+    }
+
+    // Only enforce model selection once the list has loaded — on first-time setup
+    // the list is empty until credentials are saved, so blocking here would deadlock.
+    if (availableModels.length > 0) {
+      if (!settingsForm.default_model) {
+        addToast('Please choose a default model, then save.', 'error');
+        return;
+      }
+      // A saved/typed model key may no longer exist on the API (renamed, removed) —
+      // reject it instead of saving a default the gateway would reject later.
+      const isModelInList = availableModels.some((model) => model.key === settingsForm.default_model);
+      if (!isModelInList) {
+        addToast(`Model "${settingsForm.default_model}" is not available. Please choose one from the list.`, 'error');
+        return;
+      }
+    }
+
     setIsSavingSettings(true);
     saveProjectSettings(projectId, {
       api_url: trimmedApiUrl,
@@ -80,6 +109,30 @@ export default function SettingsDialog({ project, onClose }) {
     })
       .then(() => {
         addToast('LLM settings saved.', 'success');
+        // Credentials just changed, so re-fetch the model list against the new API
+        // instead of waiting for the dialog to be reopened.
+        return fetchAvailableModels(projectId).catch((modelsError) => {
+          // Save already succeeded — don't let a model-list failure look like a save failure.
+          addToast(`Saved, but couldn't load models: ${modelsError.message}`, 'error');
+        });
+      })
+      .then((modelsList) => {
+        if (!Array.isArray(modelsList) || modelsList.length === 0) return;
+        setAvailableModels(modelsList);
+        if (settingsForm.default_model) return;
+        // First-time setup: nothing was selected before save, so persist the first
+        // available model as the default instead of making the user save twice.
+        const firstModelKey = modelsList[0].key;
+        setSettingsForm((previousForm) =>
+          previousForm.default_model
+            ? previousForm
+            : { ...previousForm, default_model: firstModelKey }
+        );
+        return saveProjectSettings(projectId, {
+          api_url: trimmedApiUrl,
+          api_key: trimmedApiKey,
+          default_model: firstModelKey,
+        }).then(() => addToast(`Default model set to ${firstModelKey}.`, 'success'));
       })
       .catch((saveError) => {
         addToast(`Failed to save settings: ${saveError.message}`, 'error');
@@ -222,7 +275,7 @@ export default function SettingsDialog({ project, onClose }) {
               onClick={onClose}
               className="flex-1 px-5 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest rounded-2xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"

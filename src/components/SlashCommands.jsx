@@ -4,7 +4,7 @@ import { ReactRenderer } from '@tiptap/react';
 import tippy from 'tippy.js';
 import CommandsList from './CommandsList';
 import React from 'react';
-import { Heading1, Heading2, Heading3, Heading4, Heading5, Heading6, List, ListOrdered, CheckSquare, Quote, Code, Table, Minus, Image, Info, AlertTriangle, AlertCircle, FileText } from 'lucide-react';
+import { Heading1, Heading2, Heading3, Heading4, Heading5, Heading6, List, ListOrdered, CheckSquare, Quote, Code, Table, Minus, Image, Info, AlertTriangle, AlertCircle, FileText, Type } from 'lucide-react';
 
 export default Extension.create({
   name: 'slashCommands',
@@ -34,10 +34,21 @@ export default Extension.create({
 export const getSuggestionItems = ({ query }) => {
   return [
     {
+      title: 'Text',
+      description: 'Plain paragraph text',
+      icon: <Type size={18} />,
+      iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-600',
+      command: ({ editor, range }) => {
+        editor.chain().focus().deleteRange(range).setParagraph().run();
+      },
+    },
+    {
       title: 'Heading 1',
       description: 'Large section heading',
       icon: <Heading1 size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-700',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setNode('heading', { level: 1 }).run();
       },
@@ -47,6 +58,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Medium section heading',
       icon: <Heading2 size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-700',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setNode('heading', { level: 2 }).run();
       },
@@ -56,6 +68,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Small section heading',
       icon: <Heading3 size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-700',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setNode('heading', { level: 3 }).run();
       },
@@ -65,6 +78,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Sub-section heading',
       icon: <Heading4 size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-700',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setNode('heading', { level: 4 }).run();
       },
@@ -74,6 +88,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Sub-sub-section heading',
       icon: <Heading5 size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-700',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setNode('heading', { level: 5 }).run();
       },
@@ -83,6 +98,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Smallest heading',
       icon: <Heading6 size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-700',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setNode('heading', { level: 6 }).run();
       },
@@ -92,6 +108,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Unordered list with bullets',
       icon: <List size={18} />,
       iconBg: 'bg-blue-50',
+      iconColor: 'text-blue-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).toggleBulletList().run();
       },
@@ -101,6 +118,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Ordered numbered list',
       icon: <ListOrdered size={18} />,
       iconBg: 'bg-blue-50',
+      iconColor: 'text-blue-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).toggleOrderedList().run();
       },
@@ -110,6 +128,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Task list with checkboxes',
       icon: <CheckSquare size={18} />,
       iconBg: 'bg-green-50',
+      iconColor: 'text-green-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).toggleTaskList().run();
       },
@@ -119,6 +138,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Blockquote / citation',
       icon: <Quote size={18} />,
       iconBg: 'bg-amber-50',
+      iconColor: 'text-amber-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).toggleBlockquote().run();
       },
@@ -128,6 +148,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Informative callout',
       icon: <Info size={18} />,
       iconBg: 'bg-blue-50',
+      iconColor: 'text-blue-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).insertContent(`> [!NOTE]\n`).run();
       },
@@ -137,6 +158,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Warning callout',
       icon: <AlertTriangle size={18} />,
       iconBg: 'bg-amber-50',
+      iconColor: 'text-amber-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).insertContent('> [!WARNING]\n').run();
       },
@@ -146,6 +168,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Caution callout',
       icon: <AlertCircle size={18} />,
       iconBg: 'bg-orange-50',
+      iconColor: 'text-orange-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).insertContent('> [!CAUTION]\n').run();
       },
@@ -155,6 +178,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Important callout',
       icon: <FileText size={18} />,
       iconBg: 'bg-green-50',
+      iconColor: 'text-green-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).insertContent('> [!IMPORTANT]\n').run();
       },
@@ -164,6 +188,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Monospace code block',
       icon: <Code size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
       },
@@ -173,6 +198,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Editable data table',
       icon: <Table size={18} />,
       iconBg: 'bg-indigo-50',
+      iconColor: 'text-indigo-600',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
       },
@@ -182,6 +208,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Horizontal rule separator',
       icon: <Minus size={18} />,
       iconBg: 'bg-slate-100',
+      iconColor: 'text-slate-400',
       command: ({ editor, range }) => {
         editor.chain().focus().deleteRange(range).setHorizontalRule().run();
       },
@@ -191,6 +218,7 @@ export const getSuggestionItems = ({ query }) => {
       description: 'Upload an image',
       icon: <Image size={18} />,
       iconBg: 'bg-emerald-50',
+      iconColor: 'text-emerald-600',
       command: ({ editor, range }) => {
         const input = document.createElement('input');
         input.type = 'file';
@@ -244,6 +272,19 @@ export const renderItems = () => {
         interactive: true,
         trigger: 'manual',
         placement: 'bottom-start',
+        // Flip above the cursor near the bottom of the page and keep the menu in view
+        popperOptions: {
+          modifiers: [
+            {
+              name: 'flip',
+              options: { fallbackPlacements: ['top-start'], padding: 8 },
+            },
+            {
+              name: 'preventOverflow',
+              options: { altAxis: true, padding: 8 },
+            },
+          ],
+        },
         zIndex: 40,
       });
     },

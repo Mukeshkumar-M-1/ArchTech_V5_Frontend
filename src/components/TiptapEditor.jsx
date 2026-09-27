@@ -94,6 +94,9 @@ import { CellSelection } from "@tiptap/pm/tables";
 
 import { DiffAdd, DiffDelete } from "./extensions/DiffMarks";
 import { useDocumentStore } from "../stores/useDocumentStore";
+import { copyTextToClipboard } from "../utils/clipboard";
+import { findBestMatchInMarkdown } from "../utils/markdownMatch";
+import useToastStore from "../store/toastStore";
 
 const normalizeText = (str) => (str || "").replace(/\s+/g, " ").trim();
 
@@ -460,6 +463,7 @@ function BlockContextMenu({ position, containerRect, onClose, onAction }) {
   }, [onClose]);
 
   const mainItems = [
+    // Hidden for now — will re-enable later
     { key: "turnInto", icon: <Repeat size={13} />, label: "Turn into…" },
     {
       key: "duplicate",
@@ -683,7 +687,7 @@ export default function TiptapEditor({
   project,
   requirementId,
   versionNumber,
-  selectedChatBlocks = [],
+  selectedChatBlocks: selectedChatBlocksProp,
   setSelectedChatBlocks,
   activeSection,
   focusedChatBlock,
@@ -693,6 +697,9 @@ export default function TiptapEditor({
   documentId = null,
 }) {
   const { markUnsaved, queueSave } = useDocumentStore();
+  const addToast = useToastStore((s) => s.addToast);
+  // Default params only catch undefined, not null — normalize so .filter/.some below are safe.
+  const selectedChatBlocks = selectedChatBlocksProp ?? [];
   const currentVersionRef = useRef(versionNumber || 1);
 
   // Only update from props if the incoming version is higher (prevents stale props from overriding after a save)
@@ -790,6 +797,23 @@ export default function TiptapEditor({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  // Block scrolling while a table menu is open — same approach as BlockContextMenu,
+  // so the menu/highlight stays anchored to the row/column instead of drifting
+  useEffect(() => {
+    if (!rowMenuOpen && !colMenuOpen) return;
+    const blockScroll = (e) => {
+      // Allow scrolling that starts inside the menu itself (e.g. overflow within menu)
+      if (e.target.closest?.("[data-table-handle]")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("wheel", blockScroll, { passive: false });
+    document.addEventListener("touchmove", blockScroll, { passive: false });
+    return () => {
+      document.removeEventListener("wheel", blockScroll);
+      document.removeEventListener("touchmove", blockScroll);
+    };
+  }, [rowMenuOpen, colMenuOpen]);
+
   onHoverRef.current = (info) => {
     if (hoverClearTimer.current) {
       clearTimeout(hoverClearTimer.current);
@@ -808,7 +832,9 @@ export default function TiptapEditor({
       // Markdown Starter Kit
       StarterKit.configure({ codeBlock: false }),
       // Initial Place holder
-      Placeholder.configure({ placeholder: 'Type "/" for commands…' }),
+      Placeholder.configure({
+        placeholder: "Press '/' to add text, tables, images or bullet points.",
+      }),
       // Bubble Menu
       BubbleMenuExtension,
       // Image Node Rendering
@@ -907,6 +933,7 @@ export default function TiptapEditor({
           "prose-td:border prose-td:border-slate-300 prose-td:p-2 " +
           "prose-th:border prose-th:border-slate-300 prose-th:bg-slate-100 prose-th:p-2 " +
           "prose-blockquote:border-l-4 prose-blockquote:border-slate-300 prose-blockquote:bg-slate-50 prose-blockquote:pl-4 prose-blockquote:py-3 prose-blockquote:rounded-r-md prose-blockquote:italic prose-blockquote:text-slate-600 " +
+          "prose-blockquote:quotes-none prose-blockquote:[&>p:first-of-type]:before:content-none prose-blockquote:[&>p:last-of-type]:after:content-none " +
           "[&_.selectedCell]:bg-primary-50/80" +
           "[&_add_content_table]:border-emerald-300 [&_add_content_th]:bg-emerald-100/50 " +
           "[&_delete_content_table]:border-red-300 [&_delete_content_th]:bg-red-100/50",
@@ -916,135 +943,100 @@ export default function TiptapEditor({
 
   // Listen for agent-based content edits
   useEffect(() => {
-    const findBestMatchInMarkdown = (searchText, fullDocumentMarkdown) => {
-      const exactText = searchText.trim();
-      if (!exactText || !fullDocumentMarkdown) return null;
-
-      // 1. Direct match check
-      if (fullDocumentMarkdown.includes(exactText)) return exactText;
-
-      // Tokenize Markdown into distinct structural & text tokens with exact offsets
-      const tokenizeMarkdown = (text) => {
-        const tokens = [];
-        // Captures words, numbers, or specific markdown symbols (| * - # ` [ ] ( ))
-        const tokenRegex = /[a-zA-Z0-9]+|\||\*+|-+|#+|`+|\[|\]|\(|\)/g;
-        let match;
-
-        while ((match = tokenRegex.exec(text)) !== null) {
-          tokens.push({
-            value: match[0].toLowerCase(),
-            start: match.index,
-            end: match.index + match[0].length,
-          });
-        }
-        return tokens;
-      };
-
-      const searchTokens = tokenizeMarkdown(exactText);
-      const docTokens = tokenizeMarkdown(fullDocumentMarkdown);
-
-      if (searchTokens.length === 0 || docTokens.length === 0) return null;
-
-      // 2. Sliding Window Sequence Match
-      const windowSize = searchTokens.length;
-      let startCharIndex = -1;
-      let endCharIndex = -1;
-
-      for (let i = 0; i <= docTokens.length - windowSize; i++) {
-        let isMatch = true;
-
-        for (let j = 0; j < windowSize; j++) {
-          if (docTokens[i + j].value !== searchTokens[j].value) {
-            isMatch = false;
-            break;
-          }
-        }
-
-        if (isMatch) {
-          startCharIndex = docTokens[i].start;
-          endCharIndex = docTokens[i + windowSize - 1].end;
-          break;
-        }
-      }
-
-      // 3. Expand to full multi-line boundaries (e.g., table rows)
-      if (startCharIndex !== -1 && endCharIndex !== -1) {
-        let lineStart = fullDocumentMarkdown.lastIndexOf('\n', startCharIndex - 1) + 1;
-        if (lineStart < 0) lineStart = 0;
-
-        let lineEnd = fullDocumentMarkdown.indexOf('\n', endCharIndex);
-        if (lineEnd === -1) lineEnd = fullDocumentMarkdown.length;
-
-        return fullDocumentMarkdown.substring(lineStart, lineEnd).trim();
-      }
-
-      return null;
+    const emitPreviewResult = (detail, success, reason) => {
+      window.dispatchEvent(
+        new CustomEvent("content-edit-preview-result", {
+          detail: { tool_call_id: detail?.tool_call_id, success, reason },
+        }),
+      );
     };
 
     const handlePreviewContentEdit = (e) => {
-      if (!editor) return;
-      const { original_text, proposed_text } = e.detail;
+      if (!editor) {
+        emitPreviewResult(e.detail, false, "Editor is not ready yet");
+        return;
+      }
+      const { original_text, proposed_text, source_markdown } = e.detail;
       console.log("Original : ", original_text, "\n Proposed : ", proposed_text);
 
-      if (original_text && proposed_text) {
-        const currentMarkdown = editor.storage.markdown.getMarkdown();
-        window.__archtech_preview_original = currentMarkdown;
+      if (!original_text || !proposed_text) {
+        emitPreviewResult(e.detail, false, "Proposal is missing original/proposed text");
+        return;
+      }
 
-        // 1. Try markdown-based match
-        const matchedMarkdownSegment = findBestMatchInMarkdown(original_text, currentMarkdown);
+      const editorMarkdown = editor.storage.markdown.getMarkdown();
 
-        console.log("Matched Markdown : ", matchedMarkdownSegment);
-        if (matchedMarkdownSegment) {
-          // DO NOT strip the table separators. 
-          // Instead, parse the original and proposed markdown into full HTML first.
-          // This ensures `marked` successfully converts |---| into a real <table>.
-          const matchedHtml = marked.parse(matchedMarkdownSegment, { gfm: true, breaks: true });
-          const proposedHtml = marked.parse(proposed_text, { gfm: true, breaks: true });
+      // Prefer the editor's live markdown (it may hold unsaved user edits that the stored
+      // file lacks); fall back to the backend-stored section markdown.
+      let baseMarkdown = null;
+      let matchedSegment = findBestMatchInMarkdown(original_text, editorMarkdown);
+      if (matchedSegment) {
+        baseMarkdown = editorMarkdown;
+      } else if (source_markdown) {
+        matchedSegment = findBestMatchInMarkdown(original_text, source_markdown);
+        if (matchedSegment) baseMarkdown = source_markdown;
+      }
 
-          // Wrap the fully rendered HTML tables in your diff tags.
-          // Note: Added \n so the parser treats these as block-level elements.
-          const diffPreviewHtml = `\n<delete_content>\n${matchedHtml}\n</delete_content>\n<add_content>\n${proposedHtml}\n</add_content>\n`;
-          
-          // Replace the markdown segment with the HTML diff block
-          const previewMarkdown = currentMarkdown.replace(matchedMarkdownSegment, diffPreviewHtml);
-          
-          console.log("Preview Markdown : ", previewMarkdown);
-          
-          // Set the editor content
-          editor.commands.setContent(marked.parse(previewMarkdown, { gfm: true, breaks: true }), true);
-          return;
+      console.log("Matched Markdown : ", matchedSegment);
+      if (matchedSegment && baseMarkdown) {
+        window.__archtech_preview_original = baseMarkdown;
+
+        // DO NOT strip the table separators.
+        // Instead, parse the original and proposed markdown into full HTML first.
+        // This ensures `marked` successfully converts |---| into a real <table>.
+        const matchedHtml = marked.parse(matchedSegment, { gfm: true, breaks: true });
+        const proposedHtml = marked.parse(proposed_text, { gfm: true, breaks: true });
+
+        // Wrap the fully rendered HTML tables in your diff tags.
+        // Note: Added \n so the parser treats these as block-level elements.
+        const diffPreviewHtml = `\n<delete_content>\n${matchedHtml}\n</delete_content>\n<add_content>\n${proposedHtml}\n</add_content>\n`;
+
+        // Replace the markdown segment with the HTML diff block
+        const previewMarkdown = baseMarkdown.replace(matchedSegment, diffPreviewHtml);
+
+        // Set the editor content. WHY emitUpdate:false: the preview is transient — firing
+        // onUpdate would push the diff markup into the debounced save and corrupt the section.
+        editor.commands.setContent(marked.parse(previewMarkdown, { gfm: true, breaks: true }), { emitUpdate: false });
+        emitPreviewResult(e.detail, true, "matched");
+        return;
+      }
+
+      // DOM-based fallback: find matching block, apply diff marks
+      const normalizedOriginalText = typeof normalizeText === 'function' ? normalizeText(original_text) : original_text.trim();
+      let matchedBlockPosition = null;
+      let matchedBlockNode = null;
+      editor.state.doc.descendants((node, pos) => {
+        const nodeText = typeof normalizeText === 'function' ? normalizeText(node.textContent) : node.textContent.trim();
+        if (node.isBlock && nodeText === normalizedOriginalText) {
+          matchedBlockPosition = pos;
+          matchedBlockNode = node;
         }
+      });
 
-        // 2. DOM-based fallback: find matching block, apply diff marks
-        const normalizedOriginalText = typeof normalizeText === 'function' ? normalizeText(original_text) : original_text.trim();
-        let matchedBlockPosition = null;
-        let matchedBlockNode = null;
-        editor.state.doc.descendants((node, pos) => {
-          const nodeText = typeof normalizeText === 'function' ? normalizeText(node.textContent) : node.textContent.trim();
-          if (node.isBlock && nodeText === normalizedOriginalText) {
-            matchedBlockPosition = pos;
-            matchedBlockNode = node;
-          }
-        });
+      if (matchedBlockPosition !== null) {
+        window.__archtech_preview_original = editorMarkdown;
+        const blockPosition = editor.state.doc.resolve(matchedBlockPosition);
+        const blockDepth = Math.max(blockPosition.depth, 1);
+        const blockStart = blockPosition.before(blockDepth);
+        const blockEnd = blockStart + matchedBlockNode.nodeSize;
 
-        if (matchedBlockPosition !== null) {
-          const blockPosition = editor.state.doc.resolve(matchedBlockPosition);
-          const blockDepth = Math.max(blockPosition.depth, 1);
-          const blockStart = blockPosition.before(blockDepth);
-          const blockEnd = blockStart + matchedBlockNode.nodeSize;
+        // Apply diffDelete mark to old content
+        const applyDeleteMark = editor.state.tr;
+        applyDeleteMark.addMark(blockStart + 1, blockEnd - 1, editor.state.schema.marks.diffDelete.create());
+        editor.view.dispatch(applyDeleteMark);
 
-          // Apply diffDelete mark to old content
-          const applyDeleteMark = editor.state.tr;
-          applyDeleteMark.addMark(blockStart + 1, blockEnd - 1, editor.state.schema.marks.diffDelete.create());
-          editor.view.dispatch(applyDeleteMark);
-
-          // Parse proposed markdown as HTML, wrap in <add_content> for diffAdd styling
-          const proposedContentHtml = marked.parse(proposed_text, { gfm: true, breaks: true });
-          const diffAddedHtml = `<add_content>${proposedContentHtml}</add_content>`;
-          editor.commands.insertContentAt(blockEnd, diffAddedHtml);
-        } else {
-          console.warn("Could not find block in editor for original_text:", original_text);
-        }
+        // Parse proposed markdown as HTML, wrap in <add_content> for diffAdd styling
+        const proposedContentHtml = marked.parse(proposed_text, { gfm: true, breaks: true });
+        const diffAddedHtml = `<add_content>${proposedContentHtml}</add_content>`;
+        editor.commands.insertContentAt(blockEnd, diffAddedHtml);
+        emitPreviewResult(e.detail, true, "dom-fallback");
+      } else {
+        console.warn("Could not find block in editor for original_text:", original_text);
+        emitPreviewResult(
+          e.detail,
+          false,
+          "Original text not found in the open section or the stored section file",
+        );
       }
     };
 
@@ -1547,15 +1539,19 @@ export default function TiptapEditor({
   // Block markdown context Rendering
   useEffect(() => {
     if (editor && !editor.isFocused) {
+      // WHY emitUpdate:false: programmatic content loading must not fire onUpdate — with
+      // Tiptap v3's options-object signature the old `setContent(x, false)` was ignored,
+      // every section switch emitted a spurious onChange, and the debounced save wiped
+      // the stored section content ~1s after it was viewed.
       if (typeof content === 'string') {
         const cur = editor.storage.markdown.getMarkdown();
         if (content !== cur) {
-          editor.commands.setContent(marked.parse(content || ""), false);
+          editor.commands.setContent(marked.parse(content || ""), { emitUpdate: false });
         }
       } else if (content && typeof content === 'object') {
         // If content is already a JSON document, set it directly.
         // Tiptap's internal diffing will ensure it only updates changed nodes.
-        editor.commands.setContent(content, false);
+        editor.commands.setContent(content, { emitUpdate: false });
       }
     }
   }, [content, editor]);
@@ -1584,9 +1580,16 @@ export default function TiptapEditor({
             .insertContentAt(pos + nodeSize, node.toJSON())
             .run();
           break;
-        case "copy":
-          navigator.clipboard.writeText(textContent);
+        case "copy": {
+          const markdown =
+            editor.storage.markdown?.serializer?.serialize(
+              Fragment.from(node),
+            ) ?? textContent;
+          copyTextToClipboard(markdown)
+            .then(() => addToast("Text copied to clipboard", "success"))
+            .catch(() => addToast("Failed to copy text", "error"));
           break;
+        }
         case "turn-paragraph":
           editor
             .chain()
@@ -1687,7 +1690,7 @@ export default function TiptapEditor({
           break;
       }
     },
-    [ctxMenu, editor],
+    [ctxMenu, editor, addToast],
   );
 
   // Export Context Block MD File
@@ -1701,6 +1704,15 @@ export default function TiptapEditor({
     a.download = "export.md";
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Copy the whole document as markdown
+  const copyMarkdown = () => {
+    if (!editor) return;
+    const md = editor.storage.markdown.getMarkdown();
+    copyTextToClipboard(md)
+      .then(() => addToast("Markdown copied to clipboard", "success"))
+      .catch(() => addToast("Failed to copy markdown", "error"));
   };
 
   return (
@@ -1725,8 +1737,14 @@ export default function TiptapEditor({
         {/* Export Buttons */}
         <div className="flex items-center gap-2">
           <button
+            onClick={copyMarkdown}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-500 hover:text-primary-600 hover:bg-white border border-transparent hover:border-slate-200 font-semibold transition-all cursor-pointer"
+          >
+            <Copy size={14} /> Copy MD
+          </button>
+          <button
             onClick={exportMarkdown}
-            className="flex items-center gap-1.5 px-2 py-1 text-slate-500 hover:text-primary-600 font-semibold transition-all"
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-500 hover:text-primary-600 hover:bg-white hover:border-slate-200 border border-transparent font-semibold transition-all cursor-pointer"
           >
             <ArrowDown size={14} /> Export MD
           </button>
@@ -1797,6 +1815,11 @@ export default function TiptapEditor({
           outline-offset: -1px;
         }
 
+        /* Suppress decorative blockquote quote marks from the typography plugin */
+        .ProseMirror blockquote { quotes: none; }
+        .ProseMirror blockquote p:first-of-type::before,
+        .ProseMirror blockquote p:last-of-type::after { content: none; }
+
         /* GitHub-style Alerts */
         .github-alert {
           border-left: 4px solid #e2e8f0 !important;
@@ -1843,7 +1866,8 @@ export default function TiptapEditor({
           min-width: 0;
         }
         .ProseMirror-selectednode { outline: 2px solid #3b82f6; background: rgba(59, 130, 246,.05); border-radius: 4px; }
-        .ProseMirror p.is-editor-empty:first-child::before {
+        .ProseMirror p.is-editor-empty:first-child::before,
+        .ProseMirror p.is-empty::before {
           color: #adb5bd; content: attr(data-placeholder);
           float: left; height: 0; pointer-events: none;
         }
@@ -1858,9 +1882,7 @@ export default function TiptapEditor({
       {/* Markdown Content rendering */}
       <div className="flex-1 flex overflow-hidden min-h-[400px]">
         <div
-          className={`flex-1 pl-16 py-8 pr-4 relative scrollbar-pro ${
-            rowMenuOpen || colMenuOpen ? "overflow-hidden" : "overflow-y-auto"
-          }`}
+          className={`flex-1 pl-16 py-8 pr-4 relative scrollbar-pro overflow-y-auto`}
           ref={containerRef}
         >
           {/* Bubble Menu */}
@@ -2048,12 +2070,20 @@ export default function TiptapEditor({
                 <BubbleBtn
                   onClick={() => {
                     const { from, to } = editor.state.selection;
-                    const text = editor.state.doc.textBetween(from, to, "\n");
-                    navigator.clipboard.writeText(text);
-                    setIsCopied(true);
-                    setTimeout(() => setIsCopied(false), 1000);
+                    const slice = editor.state.doc.slice(from, to);
+                    const markdown =
+                      editor.storage.markdown?.serializer?.serialize(
+                        slice.content,
+                      ) ??
+                      editor.state.doc.textBetween(from, to, "\n");
+                    copyTextToClipboard(markdown)
+                      .then(() => {
+                        setIsCopied(true);
+                        setTimeout(() => setIsCopied(false), 1000);
+                      })
+                      .catch(() => addToast("Failed to copy text", "error"));
                   }}
-                  title={isCopied ? "Copied!" : "Copy text"}
+                  title={isCopied ? "Copied!" : "Copy markdown"}
                   success={isCopied}
                 >
                   {isCopied ? <Check size={15} /> : <Copy size={15} />}
